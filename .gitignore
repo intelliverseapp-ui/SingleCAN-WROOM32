@@ -1,0 +1,33 @@
+# ESP-IDF build artifacts
+build/
+bootloader/
+sdkconfig
+sdkconfig.old
+CMakeFiles/
+CMakeCache.txt
+*.bin
+*.elf
+*.map
+*.log
+*.ninja
+*.obj
+*.o
+*.a
+
+# Auto-generated project description
+project_description.json
+
+# Python virtual environments
+venv/
+.env/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# VSCode
+.vscode/
+
+# Backup files
+*~
+*.bak
