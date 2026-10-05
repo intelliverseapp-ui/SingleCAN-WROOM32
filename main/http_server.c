@@ -40,6 +40,19 @@ static esp_err_t http_root_handler(httpd_req_t *req)
 }
 
 // ------------------------------------------------------------
+// ANDROID INTERNET VALIDATION HANDLER
+// ------------------------------------------------------------
+// Android checks Wi-Fi internet by requesting /generate_204.
+// If we return HTTP 204, Android marks the Wi-Fi as "validated"
+// and Gemini + Assistant will work normally.
+static esp_err_t http_generate_204_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+// ------------------------------------------------------------
 // HTTP HANDLERS
 // ------------------------------------------------------------
 
@@ -279,6 +292,9 @@ httpd_handle_t start_http_server(void)
 
     // Root JSON status
     httpd_register_uri_handler(server, &(httpd_uri_t){"/", HTTP_GET, http_root_handler, NULL});
+
+    // Android Wi-Fi validation endpoint
+    httpd_register_uri_handler(server, &(httpd_uri_t){"/generate_204", HTTP_GET, http_generate_204_handler, NULL});
 
     // Core endpoints
     httpd_register_uri_handler(server, &(httpd_uri_t){"/ping", HTTP_GET, http_ping_handler, NULL});

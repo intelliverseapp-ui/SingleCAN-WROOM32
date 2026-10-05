@@ -48,10 +48,10 @@ void app_main(void)
     // CAN RX task
     start_can_rx_task();
 
-    // Wi-Fi Access Point
-    esp_err_t wifi_ret = init_wifi_ap();
+    // Wi-Fi STA (connect to phone hotspot, static IP)
+    esp_err_t wifi_ret = init_wifi_sta();
     if (wifi_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Wi-Fi AP init FAILED: %s", esp_err_to_name(wifi_ret));
+        ESP_LOGE(TAG, "Wi-Fi STA init FAILED: %s", esp_err_to_name(wifi_ret));
         led_set_red();
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -69,7 +69,7 @@ void app_main(void)
     // TCP server task
     start_tcp_server_task();
 
-    ESP_LOGI(TAG, "SingleCAN ready (Wi-Fi AP + CAN + TCP Queue + TCP Server + HTTP Server)");
+    ESP_LOGI(TAG, "SingleCAN ready (Wi-Fi STA + CAN + TCP Queue + TCP Server + HTTP Server)");
 
     // Idle loop
     while (1) {
