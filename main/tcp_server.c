@@ -1,12 +1,17 @@
 #include "tcp_server.h"
 #include "tcp_queue.h"
-#include "duocan_leds.h"
+#include "singlecan_leds.h"
+#include "singlecan_can.h"
+#include "singlecan_commands.h"
+
 #include "esp_log.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <errno.h>
 
 static const char *TAG = "TCP";
 
@@ -17,23 +22,28 @@ static const char *TAG = "TCP";
 // Global TCP client socket for CAN RX forwarding
 int g_tcp_client_sock = -1;
 
-esp_err_t duocan_enable_can(void);
-esp_err_t duocan_disable_can(void);
-esp_err_t duocan_send_can_frame(uint32_t id, uint8_t dlc, const uint8_t *data);
-void duocan_get_status(char *out, size_t out_len);
-
 // ------------------------------------------------------------
-// Safe socket send (handles partial writes)
+// Safe socket send (handles partial writes + disconnect detection)
 // ------------------------------------------------------------
 int safe_send(int sock, const char *data, size_t len)
 {
+    if (!data || len == 0) {
+        ESP_LOGW(TAG, "safe_send called with null or zero-length data");
+        return -1;
+    }
+
     size_t total = 0;
 
     while (total < len) {
         int sent = send(sock, data + total, len - total, 0);
 
         if (sent < 0) {
-            ESP_LOGE(TAG, "Socket send error");
+            ESP_LOGE(TAG, "Socket send error: errno=%d", errno);
+            return -1;
+        }
+
+        if (sent == 0) {
+            ESP_LOGW(TAG, "Socket send returned 0 — client disconnected");
             return -1;
         }
 
@@ -48,8 +58,6 @@ int safe_send(int sock, const char *data, size_t len)
 // ------------------------------------------------------------
 void tcp_server_send_line(const char *line)
 {
-    // DO NOT send directly.
-    // Queue it for the TCP sender task.
     tcp_queue_push(line);
 }
 
@@ -62,29 +70,34 @@ static void handle_command(const char *cmd, int client_sock)
 
     ESP_LOGI(TAG, "CMD: %s", cmd);
 
+    // PING
     if (strcasecmp(cmd, "PING") == 0) {
         safe_send(client_sock, "PONG\n", 5);
         return;
     }
 
+    // ENABLE_CAN
     if (strcasecmp(cmd, "ENABLE_CAN") == 0) {
-        duocan_enable_can();
+        singlecan_enable_can();
         safe_send(client_sock, "CAN ENABLED\n", 12);
         return;
     }
 
+    // DISABLE_CAN
     if (strcasecmp(cmd, "DISABLE_CAN") == 0) {
-        duocan_disable_can();
+        singlecan_disable_can();
         safe_send(client_sock, "CAN DISABLED\n", 13);
         return;
     }
 
+    // STATUS
     if (strcasecmp(cmd, "STATUS") == 0) {
-        duocan_get_status(response, sizeof(response));
+        singlecan_get_status(response, sizeof(response));
         safe_send(client_sock, response, strlen(response));
         return;
     }
 
+    // SEND <id> <dlc> <byte0> ... <byte7>
     if (strncasecmp(cmd, "SEND ", 5) == 0) {
 
         uint32_t id = 0;
@@ -112,7 +125,7 @@ static void handle_command(const char *cmd, int client_sock)
             data[i] = (uint8_t)bytes[i];
         }
 
-        duocan_send_can_frame(id, dlc, data);
+        singlecan_send(id, data, dlc);
 
         snprintf(response, sizeof(response),
                  "SENT ID=%" PRIu32 " DLC=%" PRIu32 "\n", id, dlc);
@@ -120,6 +133,7 @@ static void handle_command(const char *cmd, int client_sock)
         return;
     }
 
+    // Unknown command
     snprintf(response, sizeof(response),
              "ERR UNKNOWN CMD: %.200s\n", cmd);
     safe_send(client_sock, response, strlen(response));
@@ -178,9 +192,9 @@ void tcp_server_task(void *arg)
         }
 
         ESP_LOGI(TAG, "Client connected");
-        duocan_leds_tcp_server_up();   // Magenta LED
+        singlecan_leds_tcp_server_up();
 
-        safe_send(client_sock, "DuoCAN TCP READY\n", 17);
+        safe_send(client_sock, "SingleCAN TCP READY\n", 20);
 
         cmd_len = 0;
 
@@ -189,7 +203,7 @@ void tcp_server_task(void *arg)
 
             if (len <= 0) {
                 ESP_LOGI(TAG, "Client disconnected");
-                duocan_leds_tcp_server_down();   // Yellow LED
+                singlecan_leds_tcp_server_down();
                 break;
             }
 

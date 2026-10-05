@@ -4,7 +4,7 @@
 #include "tcp_server.h"        // for g_tcp_client_sock and safe_send()
 
 #include "tcp_queue.h"
-#include "duocan_leds.h"
+#include "singlecan_leds.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -35,7 +35,7 @@ void tcp_queue_push(const char *line)
 
     if (ok != pdTRUE) {
         ESP_LOGW(TAG, "TCP outbound queue FULL — dropping line");
-        duocan_leds_tcp_server_down();   // Yellow LED = queue overflow
+        singlecan_leds_tcp_server_down();   // Yellow LED = queue overflow
     }
 }
 
@@ -53,7 +53,7 @@ void tcp_queue_task(void *arg)
         if (xQueueReceive(tcp_outbound_queue, &item, portMAX_DELAY) == pdTRUE) {
 
             // Queue has data → TCP server active
-            duocan_leds_tcp_server_up();   // Magenta LED
+            singlecan_leds_tcp_server_up();   // Magenta LED
 
             // If no client is connected, drop the frame
             if (g_tcp_client_sock < 0) {
@@ -68,12 +68,12 @@ void tcp_queue_task(void *arg)
                 ESP_LOGE(TAG, "TCP send failed — closing client socket");
                 close(g_tcp_client_sock);
                 g_tcp_client_sock = -1;
-                duocan_leds_tcp_server_down();   // Yellow LED = connection down
+                singlecan_leds_tcp_server_down();   // Yellow LED = connection down
             }
 
             // If queue becomes empty → stable active state
             if (uxQueueMessagesWaiting(tcp_outbound_queue) == 0) {
-                duocan_leds_tcp_server_up();   // Magenta = active but stable
+                singlecan_leds_tcp_server_up();   // Magenta = active but stable
             }
         }
     }
@@ -90,7 +90,7 @@ void tcp_queue_init(void)
 
     if (!tcp_outbound_queue) {
         ESP_LOGE(TAG, "FAILED to create TCP outbound queue");
-        duocan_leds_error();
+        singlecan_leds_error();
         return;
     }
 
@@ -106,7 +106,7 @@ void tcp_queue_init(void)
 
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "FAILED to start TCP queue task");
-        duocan_leds_error();
+        singlecan_leds_error();
         return;
     }
 

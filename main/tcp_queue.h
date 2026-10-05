@@ -4,12 +4,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
-// DuoCAN TCP Outbound Queue
+// SingleCAN TCP Outbound Queue
 // ---------------------------------------------
 // Decouples CAN RX timing from TCP send timing.
 // CAN RX pushes lines into this queue.
 // A dedicated task pops items and sends them
-// through tcp_server_send_line_safe().
+// through safe_send() to the active TCP client.
 // ---------------------------------------------
 
 // Maximum length of a single outbound line

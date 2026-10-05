@@ -1,33 +1,37 @@
-# ESP-IDF build artifacts
-build/
-bootloader/
-sdkconfig
-sdkconfig.old
+# ESP-IDF build output
+/build/
+/sdkconfig
+/sdkconfig.old
+
+# CMake
 CMakeFiles/
 CMakeCache.txt
-*.bin
-*.elf
-*.map
+cmake_install.cmake
+
+# Logs
 *.log
-*.ninja
-*.obj
+build/log/
+
+# Object files
 *.o
-*.a
+*.obj
 
-# Auto-generated project description
-project_description.json
+# Executables
+*.elf
+*.bin
+*.map
 
-# Python virtual environments
-venv/
-.env/
+# Python cache
+__pycache__/
+*.pyc
 
-# OS junk
+# macOS junk
 .DS_Store
-Thumbs.db
 
-# VSCode
+# VS Code
 .vscode/
 
-# Backup files
-*~
-*.bak
+# Temporary files
+*.tmp
+*.swp
+*.swo

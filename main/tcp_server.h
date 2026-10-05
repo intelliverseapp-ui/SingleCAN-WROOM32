@@ -18,6 +18,6 @@ int safe_send(int sock, const char *data, size_t len);
 void tcp_server_task(void *arg);
 
 // ------------------------------------------------------------
-// CAN RX forwarding function (used by duocan_can.c)
+// CAN RX forwarding function (used by singlecan_can.c)
 // ------------------------------------------------------------
 void tcp_server_send_line(const char *line);
