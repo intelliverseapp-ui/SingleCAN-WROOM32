@@ -1,15 +1,17 @@
 #pragma once
+
 #include <stddef.h>
 #include <stdint.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
-// SingleCAN TCP Outbound Queue
+// SingleCAN Bluetooth Outbound Queue
 // ---------------------------------------------
-// Decouples CAN RX timing from TCP send timing.
-// CAN RX pushes lines into this queue.
+// Decouples CAN RX timing from Bluetooth SPP send
+// timing. CAN RX pushes lines into this queue.
 // A dedicated task pops items and sends them
-// through safe_send() to the active TCP client.
+// over the active SPP connection.
 // ---------------------------------------------
 
 // Maximum length of a single outbound line
@@ -33,5 +35,5 @@ void tcp_queue_init(void);
 // Push a line into the outbound queue (non-blocking)
 void tcp_queue_push(const char *line);
 
-// Internal task that drains the queue and sends lines
+// Internal task that drains the queue and sends lines over SPP
 void tcp_queue_task(void *arg);

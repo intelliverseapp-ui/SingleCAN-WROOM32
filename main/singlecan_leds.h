@@ -1,4 +1,5 @@
 #pragma once
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -23,13 +24,10 @@ void singlecan_leds_can_idle(void);
 void singlecan_leds_can_rx_active(void);
 void singlecan_leds_can_tx_active(void);
 
-// Wi-Fi AP status
-void singlecan_leds_wifi_ap_down(void);
-void singlecan_leds_wifi_ap_up(void);
-
-// TCP server status
-void singlecan_leds_tcp_server_down(void);
-void singlecan_leds_tcp_server_up(void);
+// Bluetooth SPP status
+void singlecan_leds_bt_disconnected(void);
+void singlecan_leds_bt_connected(void);
 
 // Error indicator
 void singlecan_leds_error(void);
+

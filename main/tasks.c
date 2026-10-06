@@ -2,7 +2,6 @@
 
 #include "esp_log.h"
 #include "singlecan_can.h"
-#include "tcp_server.h"
 #include "singlecan_leds.h"
 
 static const char *TAG_TASKS = "TASKS";
@@ -53,32 +52,6 @@ void start_can_rx_task(void)
 
     if (ret != pdPASS) {
         ESP_LOGE(TAG_TASKS, "CAN RX task creation FAILED");
-        led_set_red();
-        while (1) vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-// ------------------------------------------------------------
-// TCP SERVER TASK
-// ------------------------------------------------------------
-static void tcp_server_task_wrapper(void *arg)
-{
-    tcp_server_task(NULL);   // FIXED: pass NULL as required by signature
-}
-
-void start_tcp_server_task(void)
-{
-    BaseType_t ret = xTaskCreate(
-        tcp_server_task_wrapper,
-        "tcp_server",
-        4096,
-        NULL,
-        10,
-        NULL
-    );
-
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG_TASKS, "TCP server task creation FAILED");
         led_set_red();
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }

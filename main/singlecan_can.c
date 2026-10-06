@@ -6,7 +6,7 @@
 
 static const char *TAG = "SingleCAN";
 
-// CAN enabled flag — MUST be global (not static) so http_server.c can link it
+// CAN enabled flag — MUST be global (not static)
 bool g_can_enabled = true;
 
 // ------------------------------------------------------------
@@ -68,7 +68,7 @@ void singlecan_get_status(char *out, size_t out_len)
 }
 
 // ------------------------------------------------------------
-// Transmit CAN frame — NOW WITH POINTER + LENGTH VALIDATION
+// Transmit CAN frame — pointer + length validation
 // ------------------------------------------------------------
 esp_err_t singlecan_send(uint32_t can_id, uint8_t *data, uint8_t len)
 {
@@ -142,6 +142,7 @@ esp_err_t singlecan_receive(twai_message_t *msg)
         msg->data[4], msg->data[5], msg->data[6], msg->data[7]
     );
 
+    // Push CAN RX line into Bluetooth outbound queue
     tcp_queue_push(line);
 
     return ESP_OK;

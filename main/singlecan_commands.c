@@ -1,8 +1,170 @@
 #include "singlecan_commands.h"
 #include "esp_log.h"
 #include "singlecan_can.h"
+#include <string.h>
 
 static const char *TAG = "SingleCAN_CMDS";
+
+// ------------------------------------------------------------
+// INTERNAL DISPATCHER
+// ------------------------------------------------------------
+static void dispatch_command(const char *cmd)
+{
+    if (!cmd || strlen(cmd) == 0) {
+        ESP_LOGW(TAG, "Empty command received");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Dispatching command: %s", cmd);
+
+    // Doors
+    if (strcmp(cmd, "lock_doors") == 0) {
+        singlecan_cmd_lock_doors();
+        return;
+    }
+    if (strcmp(cmd, "unlock_doors") == 0) {
+        singlecan_cmd_unlock_doors();
+        return;
+    }
+
+    // Windows
+    if (strcmp(cmd, "windows_down") == 0) {
+        singlecan_cmd_windows_down();
+        return;
+    }
+    if (strcmp(cmd, "windows_up") == 0) {
+        singlecan_cmd_windows_up();
+        return;
+    }
+
+    // Sunroof
+    if (strcmp(cmd, "sunroof_open") == 0) {
+        singlecan_cmd_sunroof_open();
+        return;
+    }
+    if (strcmp(cmd, "sunroof_close") == 0) {
+        singlecan_cmd_sunroof_close();
+        return;
+    }
+    if (strcmp(cmd, "sunroof_vent") == 0) {
+        singlecan_cmd_sunroof_vent();
+        return;
+    }
+
+    // Lights
+    if (strcmp(cmd, "headlights_on") == 0) {
+        singlecan_cmd_headlights_on();
+        return;
+    }
+    if (strcmp(cmd, "headlights_off") == 0) {
+        singlecan_cmd_headlights_off();
+        return;
+    }
+    if (strcmp(cmd, "fog_lights_on") == 0) {
+        singlecan_cmd_fog_lights_on();
+        return;
+    }
+    if (strcmp(cmd, "fog_lights_off") == 0) {
+        singlecan_cmd_fog_lights_off();
+        return;
+    }
+    if (strcmp(cmd, "interior_lights_on") == 0) {
+        singlecan_cmd_interior_lights_on();
+        return;
+    }
+    if (strcmp(cmd, "interior_lights_off") == 0) {
+        singlecan_cmd_interior_lights_off();
+        return;
+    }
+
+    // Climate
+    if (strcmp(cmd, "ac_on") == 0) {
+        singlecan_cmd_ac_on();
+        return;
+    }
+    if (strcmp(cmd, "ac_off") == 0) {
+        singlecan_cmd_ac_off();
+        return;
+    }
+    if (strcmp(cmd, "fan_up") == 0) {
+        singlecan_cmd_fan_up();
+        return;
+    }
+    if (strcmp(cmd, "fan_down") == 0) {
+        singlecan_cmd_fan_down();
+        return;
+    }
+
+    // Audio
+    if (strcmp(cmd, "audio_mute") == 0) {
+        singlecan_cmd_audio_mute();
+        return;
+    }
+    if (strcmp(cmd, "audio_unmute") == 0) {
+        singlecan_cmd_audio_unmute();
+        return;
+    }
+
+    // Trunk
+    if (strcmp(cmd, "trunk_open") == 0) {
+        singlecan_cmd_trunk_open();
+        return;
+    }
+
+    // Horn
+    if (strcmp(cmd, "horn") == 0) {
+        singlecan_cmd_horn();
+        return;
+    }
+
+    // Hazards
+    if (strcmp(cmd, "hazards_on") == 0) {
+        singlecan_cmd_hazards_on();
+        return;
+    }
+    if (strcmp(cmd, "hazards_off") == 0) {
+        singlecan_cmd_hazards_off();
+        return;
+    }
+
+    // Defrost
+    if (strcmp(cmd, "defrost_on") == 0) {
+        singlecan_cmd_defrost_on();
+        return;
+    }
+    if (strcmp(cmd, "defrost_off") == 0) {
+        singlecan_cmd_defrost_off();
+        return;
+    }
+
+    // Unknown command
+    ESP_LOGW(TAG, "Unknown command: %s", cmd);
+}
+
+// ------------------------------------------------------------
+// PUBLIC ENTRY POINT — CALLED FROM BLUETOOTH SPP
+// ------------------------------------------------------------
+void singlecan_commands_process(const char *cmd)
+{
+    if (!cmd) {
+        ESP_LOGE(TAG, "NULL command pointer");
+        return;
+    }
+
+    // Trim whitespace
+    char clean[64];
+    memset(clean, 0, sizeof(clean));
+
+    size_t len = strnlen(cmd, sizeof(clean) - 1);
+    memcpy(clean, cmd, len);
+
+    // Remove trailing newline if present
+    if (clean[len - 1] == '\n' || clean[len - 1] == '\r') {
+        clean[len - 1] = '\0';
+    }
+
+    dispatch_command(clean);
+}
 
 // ------------------------------------------------------------
 // HIGH-LEVEL VEHICLE COMMANDS (SAFE STUBS)

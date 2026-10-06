@@ -87,15 +87,12 @@ void singlecan_leds_can_tx_active(void)
     gpio_set_level(SINGLECAN_LED_GPIO, 0);
 }
 
-// Wi-Fi AP down = LED off
-void singlecan_leds_wifi_ap_down(void)
+// ------------------------------------------------------------
+// Bluetooth SPP status
+// ------------------------------------------------------------
+void singlecan_leds_bt_connected(void)
 {
-    led_set_off();
-}
-
-// Wi-Fi AP up = two blinks
-void singlecan_leds_wifi_ap_up(void)
-{
+    // Two medium blinks
     for (int i = 0; i < 2; i++) {
         gpio_set_level(SINGLECAN_LED_GPIO, 1);
         vTaskDelay(pdMS_TO_TICKS(150));
@@ -104,26 +101,17 @@ void singlecan_leds_wifi_ap_up(void)
     }
 }
 
-// TCP server down = long blink
-void singlecan_leds_tcp_server_down(void)
+void singlecan_leds_bt_disconnected(void)
 {
+    // One long blink
     gpio_set_level(SINGLECAN_LED_GPIO, 1);
     vTaskDelay(pdMS_TO_TICKS(300));
     gpio_set_level(SINGLECAN_LED_GPIO, 0);
 }
 
-// TCP server up = triple blink
-void singlecan_leds_tcp_server_up(void)
-{
-    for (int i = 0; i < 3; i++) {
-        gpio_set_level(SINGLECAN_LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_set_level(SINGLECAN_LED_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
-
-// Error = solid ON
+// ------------------------------------------------------------
+// Error indicator
+// ------------------------------------------------------------
 void singlecan_leds_error(void)
 {
     gpio_set_level(SINGLECAN_LED_GPIO, 1);

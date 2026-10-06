@@ -7,7 +7,12 @@ extern "C" {
 #endif
 
 // ------------------------------------------------------------
-// High-level vehicle command API (Siri / HTTP / TCP / BNA)
+// Public command processor (called from Bluetooth SPP)
+// ------------------------------------------------------------
+void singlecan_commands_process(const char *cmd);
+
+// ------------------------------------------------------------
+// High-level vehicle command API (safe stubs)
 // ------------------------------------------------------------
 
 // Doors
