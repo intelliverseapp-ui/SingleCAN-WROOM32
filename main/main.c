@@ -15,6 +15,8 @@
 #include "tasks.h"
 #include "bt_spp.h"   // NEW: use your dedicated Bluetooth module
 
+#include "nvs_flash.h"   // NEW: required for NVS initialization
+
 static const char *TAG = "SingleCAN_MAIN";
 
 // ------------------------------------------------------------
@@ -24,6 +26,16 @@ void app_main(void)
 {
     printf(">>> APP_MAIN ENTERED (SingleCAN-WROOM32, Bluetooth SPP) <<<\n");
     fflush(stdout);
+
+    // ------------------------------------------------------------
+    // NVS INITIALIZATION (required for BT RF calibration + config)
+    // ------------------------------------------------------------
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_ret);
 
     ESP_LOGI(TAG, "SingleCAN ESP32-WROOM32 starting (Bluetooth SPP + CAN)...");
 
@@ -48,7 +60,7 @@ void app_main(void)
     // CAN RX task
     start_can_rx_task();
 
-    // Bluetooth Classic + SPP (now handled by bt_spp.c)
+    // Bluetooth Classic + SPP (handled by bt_spp.c)
     esp_err_t bt_ret = bt_spp_init();
     if (bt_ret != ESP_OK) {
         ESP_LOGE(TAG, "Bluetooth SPP init FAILED: %s", esp_err_to_name(bt_ret));
