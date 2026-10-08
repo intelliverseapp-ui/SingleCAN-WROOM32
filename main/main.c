@@ -13,6 +13,8 @@
 static const char *TAG =
     "SingleCAN_MAIN";
 
+#define BLUETOOTH_SPP_READY_TIMEOUT_MS 10000
+
 // ------------------------------------------------------------
 // TERMINAL FAULT LOOP
 // ------------------------------------------------------------
@@ -135,8 +137,9 @@ void app_main(void)
      * and decoding. SingleCAN remains the future verified-command
      * transmitter.
      *
-     * No guessed Honda CAN mappings are installed, and the current
-     * command handlers remain non-transmitting stubs.
+     * No guessed Honda CAN mappings are installed. The verified-
+     * mapping gate prevents arbitrary identifiers or payloads from
+     * reaching the private TWAI transmission function.
      */
     const esp_err_t can_result =
         singlecan_init();
@@ -152,39 +155,78 @@ void app_main(void)
     }
 
     /*
-     * Start the TWAI health monitor and bus-off recovery task.
+     * Start the TWAI receive-drain and health-monitor tasks.
      *
-     * The receive task currently remains available for TWAI driver
-     * health and incoming-frame handling. Raw CAN frames are no
-     * longer routed through the obsolete TCP-era telemetry queue.
+     * Raw CAN frames are not logged, serialized, queued, or sent
+     * through Bluetooth.
      */
     start_can_rx_task();
 
     /*
-     * Initialize Bluetooth Classic SPP.
+     * Begin Bluetooth Classic SPP initialization.
      *
-     * bt_spp.c owns command framing, connection sessions, and the
-     * single completion-driven outbound response writer.
+     * This function starts an asynchronous initialization sequence.
+     * It does not by itself prove that the SPP server is ready.
      */
-    const esp_err_t bluetooth_result =
+    const esp_err_t bluetooth_init_result =
         bt_spp_init();
 
     if (
-        bluetooth_result !=
+        bluetooth_init_result !=
         ESP_OK
     ) {
         enter_fault_state(
-            "Bluetooth SPP",
-            bluetooth_result
+            "Bluetooth SPP initialization",
+            bluetooth_init_result
         );
     }
 
+    ESP_LOGI(
+        TAG,
+        "Waiting for SPP server-start confirmation"
+    );
+
+    /*
+     * Do not report the command backend as ready until
+     * ESP_SPP_START_EVT confirms successful server startup.
+     */
+    const esp_err_t bluetooth_ready_result =
+        bt_spp_wait_until_ready(
+            BLUETOOTH_SPP_READY_TIMEOUT_MS
+        );
+
+    if (
+        bluetooth_ready_result !=
+        ESP_OK
+    ) {
+        enter_fault_state(
+            "Bluetooth SPP server startup",
+            bluetooth_ready_result
+        );
+    }
+
+    if (!bt_spp_is_server_ready()) {
+        enter_fault_state(
+            "Bluetooth SPP readiness verification",
+            ESP_ERR_INVALID_STATE
+        );
+    }
+
+    /*
+     * Green now means the required startup path has completed:
+     *
+     * - NVS initialized
+     * - TWAI initialized
+     * - TWAI tasks started
+     * - Bluetooth controller and Bluedroid initialized
+     * - SPP server startup confirmed
+     */
     led_set_green();
 
     ESP_LOGI(
         TAG,
-        "SingleCAN startup initialized "
-        "(Bluetooth SPP command backend + CAN)"
+        "SingleCAN ready "
+        "(Bluetooth SPP server confirmed + CAN initialized)"
     );
 
     while (true) {

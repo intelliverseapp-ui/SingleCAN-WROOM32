@@ -1,11 +1,9 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "esp_bt.h"
-#include "esp_bt_device.h"
 #include "esp_bt_main.h"
 #include "esp_err.h"
 #include "esp_gap_bt_api.h"
@@ -37,10 +35,13 @@ static const char *BT_DEVICE_NAME =
 #define BT_SPP_WRITER_STACK_SIZE 4096
 #define BT_SPP_WRITER_PRIORITY 6
 
-#define BT_SPP_EVENT_CONNECTED BIT0
-#define BT_SPP_EVENT_WRITABLE BIT1
-#define BT_SPP_EVENT_WRITE_COMPLETE BIT2
-#define BT_SPP_EVENT_WRITE_FAILED BIT3
+#define BT_SPP_WRITER_EVENT_CONNECTED BIT0
+#define BT_SPP_WRITER_EVENT_WRITABLE BIT1
+#define BT_SPP_WRITER_EVENT_WRITE_COMPLETE BIT2
+#define BT_SPP_WRITER_EVENT_WRITE_FAILED BIT3
+
+#define BT_SPP_READINESS_EVENT_READY BIT0
+#define BT_SPP_READINESS_EVENT_FAILED BIT1
 
 typedef struct {
     char message[
@@ -56,6 +57,9 @@ static QueueHandle_t s_outbound_queue =
     NULL;
 
 static EventGroupHandle_t s_writer_events =
+    NULL;
+
+static EventGroupHandle_t s_readiness_events =
     NULL;
 
 static TaskHandle_t s_writer_task_handle =
@@ -75,6 +79,12 @@ static volatile int s_spp_congested =
 
 static volatile int s_spp_write_in_progress =
     0;
+
+static volatile int s_spp_server_ready =
+    0;
+
+static volatile esp_err_t s_spp_startup_error =
+    ESP_ERR_INVALID_STATE;
 
 static char s_rx_buffer[
     BT_SPP_RX_BUFFER_SIZE
@@ -100,6 +110,127 @@ static void spp_event_handler(
     esp_spp_cb_event_t event,
     esp_spp_cb_param_t *param
 );
+
+// ------------------------------------------------------------
+// SERVER READINESS HELPERS
+// ------------------------------------------------------------
+
+static void bt_spp_reset_readiness_state(void)
+{
+    s_spp_server_ready =
+        0;
+
+    s_spp_startup_error =
+        ESP_ERR_INVALID_STATE;
+
+    if (
+        s_readiness_events !=
+        NULL
+    ) {
+        xEventGroupClearBits(
+            s_readiness_events,
+            BT_SPP_READINESS_EVENT_READY |
+                BT_SPP_READINESS_EVENT_FAILED
+        );
+    }
+}
+
+static void bt_spp_mark_server_ready(void)
+{
+    s_spp_server_ready =
+        1;
+
+    s_spp_startup_error =
+        ESP_OK;
+
+    if (
+        s_readiness_events !=
+        NULL
+    ) {
+        xEventGroupClearBits(
+            s_readiness_events,
+            BT_SPP_READINESS_EVENT_FAILED
+        );
+
+        xEventGroupSetBits(
+            s_readiness_events,
+            BT_SPP_READINESS_EVENT_READY
+        );
+    }
+
+    ESP_LOGI(
+        TAG,
+        "SPP server readiness confirmed"
+    );
+}
+
+static void bt_spp_mark_server_failed(
+    esp_err_t error
+)
+{
+    s_spp_server_ready =
+        0;
+
+    s_spp_startup_error =
+        error;
+
+    if (
+        s_readiness_events !=
+        NULL
+    ) {
+        xEventGroupClearBits(
+            s_readiness_events,
+            BT_SPP_READINESS_EVENT_READY
+        );
+
+        xEventGroupSetBits(
+            s_readiness_events,
+            BT_SPP_READINESS_EVENT_FAILED
+        );
+    }
+
+    ESP_LOGE(
+        TAG,
+        "SPP server startup failed: %s",
+        esp_err_to_name(
+            error
+        )
+    );
+}
+
+static esp_err_t bt_spp_create_readiness_events(void)
+{
+    if (
+        s_readiness_events !=
+        NULL
+    ) {
+        ESP_LOGW(
+            TAG,
+            "SPP readiness event group is already initialized"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_readiness_events =
+        xEventGroupCreate();
+
+    if (
+        s_readiness_events ==
+        NULL
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Failed to create SPP readiness event group"
+        );
+
+        return ESP_ERR_NO_MEM;
+    }
+
+    bt_spp_reset_readiness_state();
+
+    return ESP_OK;
+}
 
 // ------------------------------------------------------------
 // RECEIVE-FRAMING HELPERS
@@ -220,11 +351,6 @@ static void bt_spp_process_received_bytes(
         const uint8_t byte =
             data[index];
 
-        /*
-         * Once an invalid or oversized frame is detected, discard
-         * every remaining byte through the next newline. This keeps
-         * a truncated suffix from becoming a separate command.
-         */
         if (s_rx_discard_until_newline) {
             if (byte == '\n') {
                 s_rx_discard_until_newline =
@@ -317,10 +443,10 @@ static void bt_spp_clear_writer_events(void)
 
     xEventGroupClearBits(
         s_writer_events,
-        BT_SPP_EVENT_CONNECTED |
-            BT_SPP_EVENT_WRITABLE |
-            BT_SPP_EVENT_WRITE_COMPLETE |
-            BT_SPP_EVENT_WRITE_FAILED
+        BT_SPP_WRITER_EVENT_CONNECTED |
+            BT_SPP_WRITER_EVENT_WRITABLE |
+            BT_SPP_WRITER_EVENT_WRITE_COMPLETE |
+            BT_SPP_WRITER_EVENT_WRITE_FAILED
     );
 }
 
@@ -335,14 +461,14 @@ static void bt_spp_mark_connected(void)
 
     xEventGroupClearBits(
         s_writer_events,
-        BT_SPP_EVENT_WRITE_COMPLETE |
-            BT_SPP_EVENT_WRITE_FAILED
+        BT_SPP_WRITER_EVENT_WRITE_COMPLETE |
+            BT_SPP_WRITER_EVENT_WRITE_FAILED
     );
 
     xEventGroupSetBits(
         s_writer_events,
-        BT_SPP_EVENT_CONNECTED |
-            BT_SPP_EVENT_WRITABLE
+        BT_SPP_WRITER_EVENT_CONNECTED |
+            BT_SPP_WRITER_EVENT_WRITABLE
     );
 }
 
@@ -357,18 +483,14 @@ static void bt_spp_mark_disconnected(void)
 
     xEventGroupClearBits(
         s_writer_events,
-        BT_SPP_EVENT_CONNECTED |
-            BT_SPP_EVENT_WRITABLE |
-            BT_SPP_EVENT_WRITE_COMPLETE
+        BT_SPP_WRITER_EVENT_CONNECTED |
+            BT_SPP_WRITER_EVENT_WRITABLE |
+            BT_SPP_WRITER_EVENT_WRITE_COMPLETE
     );
 
-    /*
-     * Wake a writer that may be waiting for completion from the
-     * connection that just closed.
-     */
     xEventGroupSetBits(
         s_writer_events,
-        BT_SPP_EVENT_WRITE_FAILED
+        BT_SPP_WRITER_EVENT_WRITE_FAILED
     );
 }
 
@@ -382,6 +504,7 @@ static void bt_spp_start_next_writer_state(void)
     }
 
     if (
+        s_spp_server_ready &&
         s_spp_connected &&
         s_spp_handle != 0 &&
         !s_spp_congested &&
@@ -389,13 +512,13 @@ static void bt_spp_start_next_writer_state(void)
     ) {
         xEventGroupSetBits(
             s_writer_events,
-            BT_SPP_EVENT_CONNECTED |
-                BT_SPP_EVENT_WRITABLE
+            BT_SPP_WRITER_EVENT_CONNECTED |
+                BT_SPP_WRITER_EVENT_WRITABLE
         );
     } else {
         xEventGroupClearBits(
             s_writer_events,
-            BT_SPP_EVENT_WRITABLE
+            BT_SPP_WRITER_EVENT_WRITABLE
         );
     }
 }
@@ -443,27 +566,23 @@ static void bt_spp_writer_task(
             continue;
         }
 
-        /*
-         * Wait until the active SPP session can accept a write.
-         * A message associated with an older session is rejected
-         * before esp_spp_write() is called.
-         */
         xEventGroupWaitBits(
             s_writer_events,
-            BT_SPP_EVENT_CONNECTED |
-                BT_SPP_EVENT_WRITABLE,
+            BT_SPP_WRITER_EVENT_CONNECTED |
+                BT_SPP_WRITER_EVENT_WRITABLE,
             pdFALSE,
             pdTRUE,
             portMAX_DELAY
         );
 
         if (
+            !s_spp_server_ready ||
             !s_spp_connected ||
             s_spp_handle == 0
         ) {
             ESP_LOGW(
                 TAG,
-                "Queued message discarded because SPP disconnected"
+                "Queued message discarded because SPP is unavailable"
             );
 
             memset(
@@ -498,9 +617,9 @@ static void bt_spp_writer_task(
 
         xEventGroupClearBits(
             s_writer_events,
-            BT_SPP_EVENT_WRITABLE |
-                BT_SPP_EVENT_WRITE_COMPLETE |
-                BT_SPP_EVENT_WRITE_FAILED
+            BT_SPP_WRITER_EVENT_WRITABLE |
+                BT_SPP_WRITER_EVENT_WRITE_COMPLETE |
+                BT_SPP_WRITER_EVENT_WRITE_FAILED
         );
 
         s_spp_write_in_progress =
@@ -548,8 +667,8 @@ static void bt_spp_writer_task(
         const EventBits_t completion_bits =
             xEventGroupWaitBits(
                 s_writer_events,
-                BT_SPP_EVENT_WRITE_COMPLETE |
-                    BT_SPP_EVENT_WRITE_FAILED,
+                BT_SPP_WRITER_EVENT_WRITE_COMPLETE |
+                    BT_SPP_WRITER_EVENT_WRITE_FAILED,
                 pdTRUE,
                 pdFALSE,
                 portMAX_DELAY
@@ -557,7 +676,7 @@ static void bt_spp_writer_task(
 
         if (
             completion_bits &
-            BT_SPP_EVENT_WRITE_FAILED
+            BT_SPP_WRITER_EVENT_WRITE_FAILED
         ) {
             ESP_LOGE(
                 TAG,
@@ -565,7 +684,7 @@ static void bt_spp_writer_task(
             );
         } else if (
             completion_bits &
-            BT_SPP_EVENT_WRITE_COMPLETE
+            BT_SPP_WRITER_EVENT_WRITE_COMPLETE
         ) {
             ESP_LOGI(
                 TAG,
@@ -584,6 +703,81 @@ static void bt_spp_writer_task(
             sizeof(item)
         );
     }
+}
+
+// ------------------------------------------------------------
+// PUBLIC SERVER READINESS
+// ------------------------------------------------------------
+
+int bt_spp_is_server_ready(void)
+{
+    return s_spp_server_ready;
+}
+
+esp_err_t bt_spp_wait_until_ready(
+    uint32_t timeout_ms
+)
+{
+    if (
+        s_readiness_events ==
+        NULL
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Cannot wait for SPP readiness before initialization"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (timeout_ms == 0) {
+        return bt_spp_is_server_ready()
+            ? ESP_OK
+            : ESP_ERR_TIMEOUT;
+    }
+
+    const TickType_t timeout_ticks =
+        pdMS_TO_TICKS(
+            timeout_ms
+        );
+
+    const EventBits_t result_bits =
+        xEventGroupWaitBits(
+            s_readiness_events,
+            BT_SPP_READINESS_EVENT_READY |
+                BT_SPP_READINESS_EVENT_FAILED,
+            pdFALSE,
+            pdFALSE,
+            timeout_ticks
+        );
+
+    if (
+        result_bits &
+        BT_SPP_READINESS_EVENT_READY
+    ) {
+        return ESP_OK;
+    }
+
+    if (
+        result_bits &
+        BT_SPP_READINESS_EVENT_FAILED
+    ) {
+        if (
+            s_spp_startup_error !=
+            ESP_OK
+        ) {
+            return s_spp_startup_error;
+        }
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGE(
+        TAG,
+        "Timed out waiting for SPP server readiness"
+    );
+
+    return ESP_ERR_TIMEOUT;
 }
 
 // ------------------------------------------------------------
@@ -621,13 +815,14 @@ esp_err_t bt_spp_send(
     }
 
     if (
+        !s_spp_server_ready ||
         s_outbound_queue == NULL ||
         s_writer_events == NULL ||
         s_writer_task_handle == NULL
     ) {
         ESP_LOGE(
             TAG,
-            "SPP writer is not initialized"
+            "SPP server or writer is not ready"
         );
 
         return ESP_ERR_INVALID_STATE;
@@ -742,6 +937,23 @@ static void spp_event_handler(
     switch (event) {
 
     case ESP_SPP_INIT_EVT: {
+        if (
+            param->init.status !=
+            ESP_SPP_SUCCESS
+        ) {
+            ESP_LOGE(
+                TAG,
+                "SPP initialization event failed, status=%d",
+                param->init.status
+            );
+
+            bt_spp_mark_server_failed(
+                ESP_FAIL
+            );
+
+            break;
+        }
+
         ESP_LOGI(
             TAG,
             "SPP init event, starting SPP server"
@@ -763,6 +975,12 @@ static void spp_event_handler(
                     result
                 )
             );
+
+            bt_spp_mark_server_failed(
+                result
+            );
+
+            break;
         }
 
         result =
@@ -782,6 +1000,12 @@ static void spp_event_handler(
                     result
                 )
             );
+
+            bt_spp_mark_server_failed(
+                result
+            );
+
+            break;
         }
 
         result =
@@ -803,25 +1027,50 @@ static void spp_event_handler(
                     result
                 )
             );
+
+            bt_spp_mark_server_failed(
+                result
+            );
         }
 
         break;
     }
 
     case ESP_SPP_START_EVT:
-        ESP_LOGI(
-            TAG,
-            "SPP server started, handle=%" PRIu32,
-            param->start.handle
-        );
+        if (
+            param->start.status ==
+            ESP_SPP_SUCCESS
+        ) {
+            ESP_LOGI(
+                TAG,
+                "SPP server started, handle=%" PRIu32,
+                param->start.handle
+            );
+
+            bt_spp_mark_server_ready();
+        } else {
+            ESP_LOGE(
+                TAG,
+                "SPP server start event failed, status=%d",
+                param->start.status
+            );
+
+            bt_spp_mark_server_failed(
+                ESP_FAIL
+            );
+        }
         break;
 
     case ESP_SPP_SRV_OPEN_EVT:
-        /*
-         * Every new connection creates a new command session.
-         * No module authorization from an earlier client or earlier
-         * connection may carry into this session.
-         */
+        if (!s_spp_server_ready) {
+            ESP_LOGE(
+                TAG,
+                "Rejecting SPP open event before server readiness"
+            );
+
+            break;
+        }
+
         s_session_id +=
             1;
 
@@ -912,12 +1161,13 @@ static void spp_event_handler(
 
     case ESP_SPP_DATA_IND_EVT:
         if (
+            !s_spp_server_ready ||
             !s_spp_connected ||
             s_spp_handle == 0
         ) {
             ESP_LOGW(
                 TAG,
-                "Ignoring SPP data without an active client"
+                "Ignoring SPP data without an active ready session"
             );
 
             break;
@@ -1027,7 +1277,7 @@ static void spp_event_handler(
             ) {
                 xEventGroupSetBits(
                     s_writer_events,
-                    BT_SPP_EVENT_WRITE_COMPLETE
+                    BT_SPP_WRITER_EVENT_WRITE_COMPLETE
                 );
             }
         } else {
@@ -1043,7 +1293,7 @@ static void spp_event_handler(
             ) {
                 xEventGroupSetBits(
                     s_writer_events,
-                    BT_SPP_EVENT_WRITE_FAILED
+                    BT_SPP_WRITER_EVENT_WRITE_FAILED
                 );
             }
         }
@@ -1194,6 +1444,22 @@ esp_err_t bt_spp_init(void)
     s_spp_write_in_progress =
         0;
 
+    s_spp_server_ready =
+        0;
+
+    s_spp_startup_error =
+        ESP_ERR_INVALID_STATE;
+
+    const esp_err_t readiness_result =
+        bt_spp_create_readiness_events();
+
+    if (
+        readiness_result !=
+        ESP_OK
+    ) {
+        return readiness_result;
+    }
+
     const esp_err_t writer_result =
         bt_spp_create_writer();
 
@@ -1201,6 +1467,10 @@ esp_err_t bt_spp_init(void)
         writer_result !=
         ESP_OK
     ) {
+        bt_spp_mark_server_failed(
+            writer_result
+        );
+
         return writer_result;
     }
 
@@ -1226,6 +1496,10 @@ esp_err_t bt_spp_init(void)
             )
         );
 
+        bt_spp_mark_server_failed(
+            result
+        );
+
         return result;
     }
 
@@ -1249,6 +1523,10 @@ esp_err_t bt_spp_init(void)
             )
         );
 
+        bt_spp_mark_server_failed(
+            result
+        );
+
         return result;
     }
 
@@ -1267,6 +1545,10 @@ esp_err_t bt_spp_init(void)
             esp_err_to_name(
                 result
             )
+        );
+
+        bt_spp_mark_server_failed(
+            result
         );
 
         return result;
@@ -1292,6 +1574,10 @@ esp_err_t bt_spp_init(void)
             )
         );
 
+        bt_spp_mark_server_failed(
+            result
+        );
+
         return result;
     }
 
@@ -1308,6 +1594,10 @@ esp_err_t bt_spp_init(void)
             esp_err_to_name(
                 result
             )
+        );
+
+        bt_spp_mark_server_failed(
+            result
         );
 
         return result;
@@ -1333,6 +1623,10 @@ esp_err_t bt_spp_init(void)
             esp_err_to_name(
                 result
             )
+        );
+
+        bt_spp_mark_server_failed(
+            result
         );
 
         return result;
@@ -1369,12 +1663,17 @@ esp_err_t bt_spp_init(void)
             )
         );
 
+        bt_spp_mark_server_failed(
+            result
+        );
+
         return result;
     }
 
     ESP_LOGI(
         TAG,
-        "Bluetooth SPP initialization requested"
+        "Bluetooth SPP initialization requested; "
+        "awaiting server-start confirmation"
     );
 
     return ESP_OK;

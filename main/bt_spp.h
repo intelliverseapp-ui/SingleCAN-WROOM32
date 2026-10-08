@@ -14,13 +14,45 @@ extern "C" {
 
 /**
  * Initializes the Bluetooth Classic controller, Bluedroid,
- * the SPP callback, and the BabyNodeCAN SPP server.
+ * the SPP callback, the completion-driven outbound writer, and the
+ * BabyNodeCAN SPP server.
  *
- * The initialization request is asynchronous. Successful return
- * means initialization was accepted, not necessarily that the
- * SPP server has completed startup.
+ * Initialization of the SPP server is asynchronous.
+ *
+ * ESP_OK means the initialization request was accepted. The caller
+ * must use bt_spp_wait_until_ready() before reporting the Bluetooth
+ * command backend as ready.
  */
 esp_err_t bt_spp_init(void);
+
+// ------------------------------------------------------------
+// SPP SERVER READINESS
+// ------------------------------------------------------------
+
+/**
+ * Returns nonzero only after ESP_SPP_START_EVT confirms that the SPP
+ * server started successfully.
+ *
+ * A connected client is not required for the server to be ready.
+ */
+int bt_spp_is_server_ready(void);
+
+/**
+ * Waits for the asynchronous SPP server startup result.
+ *
+ * timeout_ms specifies the maximum number of milliseconds to wait.
+ *
+ * Returns:
+ * - ESP_OK when ESP_SPP_START_EVT confirms successful server startup
+ * - ESP_ERR_TIMEOUT when startup is not confirmed before timeout_ms
+ * - ESP_ERR_INVALID_STATE when the SPP readiness mechanism has not
+ *   been initialized or server startup fails
+ * - Another ESP-IDF error when startup failure information is
+ *   available
+ */
+esp_err_t bt_spp_wait_until_ready(
+    uint32_t timeout_ms
+);
 
 // ------------------------------------------------------------
 // SPP CONNECTION STATE
@@ -29,8 +61,8 @@ esp_err_t bt_spp_init(void);
 /**
  * Returns nonzero when an authenticated SPP client is connected.
  *
- * This function reports the current connection state managed by
- * bt_spp.c.
+ * This is separate from server readiness. The SPP server may be
+ * ready while no Android client is connected.
  */
 int bt_spp_is_connected(void);
 
@@ -39,8 +71,8 @@ int bt_spp_is_connected(void);
  *
  * Returns zero when no SPP client is connected.
  *
- * External modules should not call esp_spp_write() directly with
- * this handle. All outbound messages must use bt_spp_send().
+ * External modules must not call esp_spp_write() directly with this
+ * handle. All outbound messages must use bt_spp_send().
  */
 uint32_t bt_spp_get_handle(void);
 
@@ -49,17 +81,18 @@ uint32_t bt_spp_get_handle(void);
 // ------------------------------------------------------------
 
 /**
- * Queues one newline-delimited text message for transmission to
- * the active SPP client.
+ * Queues one newline-delimited text message for transmission to the
+ * active SPP client.
  *
  * The supplied message must:
  * - Be null-terminated
  * - Be nonempty
- * - Not already include the framing newline
+ * - Not include the framing newline
  * - Fit within the configured outbound-message limit
  *
  * bt_spp.c owns:
- * - The active SPP handle
+ * - The active SPP connection handle
+ * - Connection-session isolation
  * - Outbound-message serialization
  * - Newline framing
  * - Congestion handling
@@ -69,16 +102,16 @@ uint32_t bt_spp_get_handle(void);
  * No other source file may call esp_spp_write() directly.
  *
  * Returns:
- * - ESP_OK when the message is accepted for queued transmission
+ * - ESP_OK when the message enters the SPP writer queue
  * - ESP_ERR_INVALID_ARG for a null or empty message
  * - ESP_ERR_INVALID_SIZE when the message is too large
- * - ESP_ERR_INVALID_STATE when no client is connected or the
- *   SPP writer is unavailable
- * - ESP_ERR_NO_MEM when the outbound queue is full
- * - Another ESP-IDF error if the request cannot be accepted
+ * - ESP_ERR_INVALID_STATE when the SPP server, connection, or writer
+ *   is unavailable
+ * - ESP_ERR_NO_MEM when the outbound queue cannot accept the message
+ * - Another ESP-IDF error when the request cannot be accepted
  *
- * ESP_OK means the message entered the SPP writer pipeline.
- * It does not mean that ESP_SPP_WRITE_EVT has confirmed delivery.
+ * ESP_OK means the message entered the writer pipeline. It does not
+ * mean ESP_SPP_WRITE_EVT has confirmed completion.
  */
 esp_err_t bt_spp_send(
     const char *message
