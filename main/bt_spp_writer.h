@@ -25,6 +25,19 @@ typedef struct {
 } bt_spp_writer_session_t;
 
 /**
+ * Cumulative response-delivery failure counters.
+ *
+ * Counters remain available across Bluetooth sessions and never
+ * contain response content or other sensitive data.
+ */
+typedef struct {
+    uint32_t queue_full;
+    uint32_t immediate_write_failures;
+    uint32_t asynchronous_write_failures;
+    uint32_t write_timeouts;
+} bt_spp_writer_stats_t;
+
+/**
  * Retrieves a synchronized snapshot of the active SPP session.
  */
 typedef void (*bt_spp_writer_session_provider_t)(
@@ -99,6 +112,13 @@ void bt_spp_writer_on_congestion_changed(void);
  */
 int bt_spp_writer_on_write_event(
     const esp_spp_cb_param_t *parameters
+);
+
+/**
+ * Copies the cumulative response-delivery failure counters.
+ */
+void bt_spp_writer_get_stats(
+    bt_spp_writer_stats_t *stats
 );
 
 #ifdef __cplusplus
