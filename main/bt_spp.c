@@ -221,9 +221,9 @@ static void bt_spp_process_received_bytes(
             data[index];
 
         /*
-         * After an invalid or oversized frame, ignore bytes through
-         * the next newline. This prevents a truncated suffix from
-         * being interpreted as a new command.
+         * Once an invalid or oversized frame is detected, discard
+         * every remaining byte through the next newline. This keeps
+         * a truncated suffix from becoming a separate command.
          */
         if (s_rx_discard_until_newline) {
             if (byte == '\n') {
@@ -364,7 +364,7 @@ static void bt_spp_mark_disconnected(void)
 
     /*
      * Wake a writer that may be waiting for completion from the
-     * now-closed connection.
+     * connection that just closed.
      */
     xEventGroupSetBits(
         s_writer_events,
@@ -444,9 +444,9 @@ static void bt_spp_writer_task(
         }
 
         /*
-         * Wait until a client is connected and the active session is
-         * writable. If a disconnect/reconnect occurred after this
-         * item was queued, the session check below discards it.
+         * Wait until the active SPP session can accept a write.
+         * A message associated with an older session is rejected
+         * before esp_spp_write() is called.
          */
         xEventGroupWaitBits(
             s_writer_events,
@@ -587,7 +587,7 @@ static void bt_spp_writer_task(
 }
 
 // ------------------------------------------------------------
-// PUBLIC ACCESSORS
+// PUBLIC CONNECTION ACCESSORS
 // ------------------------------------------------------------
 
 int bt_spp_is_connected(void)
@@ -818,8 +818,9 @@ static void spp_event_handler(
 
     case ESP_SPP_SRV_OPEN_EVT:
         /*
-         * A new connection creates a new session. Any queued output
-         * from the previous client is discarded.
+         * Every new connection creates a new command session.
+         * No module authorization from an earlier client or earlier
+         * connection may carry into this session.
          */
         s_session_id +=
             1;
@@ -840,6 +841,8 @@ static void spp_event_handler(
 
         s_spp_write_in_progress =
             0;
+
+        singlecan_commands_reset_session();
 
         bt_spp_reset_receive_state();
 
@@ -897,6 +900,8 @@ static void spp_event_handler(
             s_session_id =
                 1;
         }
+
+        singlecan_commands_reset_session();
 
         bt_spp_reset_receive_state();
 
@@ -1016,10 +1021,15 @@ static void spp_event_handler(
                 param->write.cong
             );
 
-            xEventGroupSetBits(
-                s_writer_events,
-                BT_SPP_EVENT_WRITE_COMPLETE
-            );
+            if (
+                s_writer_events !=
+                NULL
+            ) {
+                xEventGroupSetBits(
+                    s_writer_events,
+                    BT_SPP_EVENT_WRITE_COMPLETE
+                );
+            }
         } else {
             ESP_LOGE(
                 TAG,
@@ -1027,10 +1037,15 @@ static void spp_event_handler(
                 param->write.status
             );
 
-            xEventGroupSetBits(
-                s_writer_events,
-                BT_SPP_EVENT_WRITE_FAILED
-            );
+            if (
+                s_writer_events !=
+                NULL
+            ) {
+                xEventGroupSetBits(
+                    s_writer_events,
+                    BT_SPP_EVENT_WRITE_FAILED
+                );
+            }
         }
 
         bt_spp_start_next_writer_state();
@@ -1052,6 +1067,19 @@ static void spp_event_handler(
 
 static esp_err_t bt_spp_create_writer(void)
 {
+    if (
+        s_outbound_queue != NULL ||
+        s_writer_events != NULL ||
+        s_writer_task_handle != NULL
+    ) {
+        ESP_LOGW(
+            TAG,
+            "SPP writer pipeline is already initialized"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
     s_outbound_queue =
         xQueueCreate(
             BT_SPP_TX_QUEUE_LENGTH,
@@ -1148,6 +1176,8 @@ static esp_err_t bt_spp_create_writer(void)
 esp_err_t bt_spp_init(void)
 {
     bt_spp_reset_receive_state();
+
+    singlecan_commands_reset_session();
 
     s_spp_handle =
         0;

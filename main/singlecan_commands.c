@@ -16,21 +16,236 @@ static const char *TAG =
     "SingleCAN_CMDS";
 
 typedef enum {
-    MODULE_MODE_NOT_CONFIGURED = 0,
-    MODULE_MODE_SINGLE_CAN,
-    MODULE_MODE_DUAL_CAN
-} module_mode_t;
-
-typedef enum {
     COMMAND_RESULT_NOT_IMPLEMENTED = 0,
     COMMAND_RESULT_UNSUPPORTED
 } command_result_t;
 
-static module_mode_t s_module_mode =
-    MODULE_MODE_NOT_CONFIGURED;
+typedef void (*command_handler_t)(void);
+
+typedef struct {
+    const char *command;
+    command_handler_t handler;
+} command_mapping_t;
+
+/*
+ * Configuration applies only to the current Bluetooth session.
+ * bt_spp.c will reset this state when a client connects or
+ * disconnects.
+ */
+static bool s_single_can_configured =
+    false;
 
 // ------------------------------------------------------------
-// INTERNAL: SEND JSON RESPONSE TO BABYNODE AUTOMOTIVE
+// FORWARD DECLARATIONS
+// ------------------------------------------------------------
+
+static void send_response(
+    int packet_id,
+    const char *status,
+    const char *command,
+    const char *reason
+);
+
+static bool parse_packet_id(
+    const cJSON *id_item,
+    int *packet_id
+);
+
+static bool process_module_config(
+    const char *value
+);
+
+static command_result_t dispatch_command(
+    const char *command
+);
+
+static void process_json_packet(
+    const char *packet
+);
+
+// ------------------------------------------------------------
+// COMMAND ALLOWLIST
+// ------------------------------------------------------------
+
+static const command_mapping_t COMMAND_MAPPINGS[] = {
+    {
+        "LOCK_DOORS",
+        singlecan_cmd_lock_doors
+    },
+    {
+        "locks.all.lock",
+        singlecan_cmd_lock_doors
+    },
+    {
+        "UNLOCK_DOORS",
+        singlecan_cmd_unlock_doors
+    },
+    {
+        "locks.all.unlock",
+        singlecan_cmd_unlock_doors
+    },
+    {
+        "WINDOW_DRIVER_DOWN",
+        singlecan_cmd_windows_down
+    },
+    {
+        "WINDOW_PASSENGER_DOWN",
+        singlecan_cmd_windows_down
+    },
+    {
+        "WINDOWS_DOWN",
+        singlecan_cmd_windows_down
+    },
+    {
+        "WINDOW_DRIVER_UP",
+        singlecan_cmd_windows_up
+    },
+    {
+        "WINDOW_PASSENGER_UP",
+        singlecan_cmd_windows_up
+    },
+    {
+        "WINDOWS_UP",
+        singlecan_cmd_windows_up
+    },
+    {
+        "SUNROOF_OPEN",
+        singlecan_cmd_sunroof_open
+    },
+    {
+        "MOONROOF_OPEN",
+        singlecan_cmd_sunroof_open
+    },
+    {
+        "SUNROOF_CLOSE",
+        singlecan_cmd_sunroof_close
+    },
+    {
+        "MOONROOF_CLOSE",
+        singlecan_cmd_sunroof_close
+    },
+    {
+        "SUNROOF_VENT",
+        singlecan_cmd_sunroof_vent
+    },
+    {
+        "HEADLIGHTS_ON",
+        singlecan_cmd_headlights_on
+    },
+    {
+        "HEADLIGHTS_OFF",
+        singlecan_cmd_headlights_off
+    },
+    {
+        "FOG_LIGHTS_ON",
+        singlecan_cmd_fog_lights_on
+    },
+    {
+        "FOG_LIGHTS_OFF",
+        singlecan_cmd_fog_lights_off
+    },
+    {
+        "INTERIOR_LIGHTS_ON",
+        singlecan_cmd_interior_lights_on
+    },
+    {
+        "INTERIOR_LIGHTS_OFF",
+        singlecan_cmd_interior_lights_off
+    },
+    {
+        "AC_ON",
+        singlecan_cmd_ac_on
+    },
+    {
+        "AC_OFF",
+        singlecan_cmd_ac_off
+    },
+    {
+        "FAN_UP",
+        singlecan_cmd_fan_up
+    },
+    {
+        "FAN_DOWN",
+        singlecan_cmd_fan_down
+    },
+    {
+        "AUDIO_MUTE",
+        singlecan_cmd_audio_mute
+    },
+    {
+        "AUDIO_UNMUTE",
+        singlecan_cmd_audio_unmute
+    },
+    {
+        "TRUNK_OPEN",
+        singlecan_cmd_trunk_open
+    },
+    {
+        "HORN",
+        singlecan_cmd_horn
+    },
+    {
+        "HORN_SHORT",
+        singlecan_cmd_horn
+    },
+    {
+        "HAZARDS_ON",
+        singlecan_cmd_hazards_on
+    },
+    {
+        "HAZARDS_OFF",
+        singlecan_cmd_hazards_off
+    },
+    {
+        "DEFROST_ON",
+        singlecan_cmd_defrost_on
+    },
+    {
+        "DEFROST_FRONT",
+        singlecan_cmd_defrost_on
+    },
+    {
+        "DEFROST_REAR",
+        singlecan_cmd_defrost_on
+    },
+    {
+        "DEFROST_OFF",
+        singlecan_cmd_defrost_off
+    },
+    {
+        "DEFROST_REAR_OFF",
+        singlecan_cmd_defrost_off
+    }
+};
+
+static const size_t COMMAND_MAPPING_COUNT =
+    sizeof(COMMAND_MAPPINGS) /
+    sizeof(COMMAND_MAPPINGS[0]);
+
+// ------------------------------------------------------------
+// PUBLIC SESSION STATE
+// ------------------------------------------------------------
+
+void singlecan_commands_reset_session(void)
+{
+    s_single_can_configured =
+        false;
+
+    ESP_LOGI(
+        TAG,
+        "Command session reset; module configuration required"
+    );
+}
+
+int singlecan_commands_is_configured(void)
+{
+    return s_single_can_configured
+        ? 1
+        : 0;
+}
+
+// ------------------------------------------------------------
+// SEND JSON RESPONSE TO BABYNODE AUTOMOTIVE
 // ------------------------------------------------------------
 
 static void send_response(
@@ -67,7 +282,7 @@ static void send_response(
         return;
     }
 
-    bool response_valid =
+    bool valid =
         true;
 
     if (
@@ -77,48 +292,48 @@ static void send_response(
             packet_id
         ) == NULL
     ) {
-        response_valid =
+        valid =
             false;
     }
 
     if (
-        response_valid &&
+        valid &&
         cJSON_AddStringToObject(
             response,
             "type",
             "response"
         ) == NULL
     ) {
-        response_valid =
+        valid =
             false;
     }
 
     if (
-        response_valid &&
+        valid &&
         cJSON_AddStringToObject(
             response,
             "status",
             status
         ) == NULL
     ) {
-        response_valid =
+        valid =
             false;
     }
 
     if (
-        response_valid &&
+        valid &&
         cJSON_AddStringToObject(
             response,
             "command",
             command
         ) == NULL
     ) {
-        response_valid =
+        valid =
             false;
     }
 
     if (
-        response_valid &&
+        valid &&
         reason != NULL &&
         reason[0] != '\0' &&
         cJSON_AddStringToObject(
@@ -127,11 +342,11 @@ static void send_response(
             reason
         ) == NULL
     ) {
-        response_valid =
+        valid =
             false;
     }
 
-    if (!response_valid) {
+    if (!valid) {
         ESP_LOGE(
             TAG,
             "Failed to construct response JSON"
@@ -170,17 +385,20 @@ static void send_response(
         command
     );
 
-    const esp_err_t result =
+    const esp_err_t send_result =
         bt_spp_send(
             response_text
         );
 
-    if (result != ESP_OK) {
+    if (
+        send_result !=
+        ESP_OK
+    ) {
         ESP_LOGE(
             TAG,
-            "Failed to send response: %s",
+            "Failed to queue response: %s",
             esp_err_to_name(
-                result
+                send_result
             )
         );
     }
@@ -195,7 +413,7 @@ static void send_response(
 }
 
 // ------------------------------------------------------------
-// INTERNAL: STRICT REQUEST-ID VALIDATION
+// STRICT REQUEST-ID VALIDATION
 // ------------------------------------------------------------
 
 static bool parse_packet_id(
@@ -236,7 +454,7 @@ static bool parse_packet_id(
 }
 
 // ------------------------------------------------------------
-// INTERNAL: MODULE CONFIGURATION
+// SINGLE-CAN MODULE CONFIGURATION
 // ------------------------------------------------------------
 
 static bool process_module_config(
@@ -252,6 +470,9 @@ static bool process_module_config(
             "config.module received without a value"
         );
 
+        s_single_can_configured =
+            false;
+
         return false;
     }
 
@@ -261,369 +482,90 @@ static bool process_module_config(
             "single"
         ) == 0
     ) {
-        s_module_mode =
-            MODULE_MODE_SINGLE_CAN;
+        s_single_can_configured =
+            true;
 
         ESP_LOGI(
             TAG,
-            "Module configured: SINGLE_CAN"
+            "Module configured for this session: SINGLE_CAN"
         );
 
         return true;
     }
 
+    /*
+     * This firmware controls one CAN channel only. It must not
+     * acknowledge Dual-CAN configuration that it cannot apply.
+     */
     if (
         strcasecmp(
             value,
             "dual"
         ) == 0
     ) {
-        s_module_mode =
-            MODULE_MODE_DUAL_CAN;
+        s_single_can_configured =
+            false;
 
-        ESP_LOGI(
+        ESP_LOGW(
             TAG,
-            "Module configured: DUAL_CAN"
+            "Dual-CAN configuration rejected by SingleCAN firmware"
         );
 
-        return true;
+        return false;
     }
+
+    s_single_can_configured =
+        false;
 
     ESP_LOGW(
         TAG,
-        "Unknown module configuration"
+        "Unknown module configuration rejected"
     );
 
     return false;
 }
 
 // ------------------------------------------------------------
-// INTERNAL: CANONICAL COMMAND DISPATCHER
+// CANONICAL COMMAND DISPATCHER
 // ------------------------------------------------------------
 
 static command_result_t dispatch_command(
-    const char *cmd
+    const char *command
 )
 {
     if (
-        cmd == NULL ||
-        cmd[0] == '\0'
+        command == NULL ||
+        command[0] == '\0'
     ) {
         return COMMAND_RESULT_UNSUPPORTED;
     }
 
-    ESP_LOGI(
-        TAG,
-        "Dispatching canonical command: %s",
-        cmd
-    );
-
-    // Doors
-    if (
-        strcasecmp(
-            cmd,
-            "LOCK_DOORS"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "locks.all.lock"
-        ) == 0
+    for (
+        size_t index = 0;
+        index < COMMAND_MAPPING_COUNT;
+        ++index
     ) {
-        singlecan_cmd_lock_doors();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
+        if (
+            strcasecmp(
+                command,
+                COMMAND_MAPPINGS[index].command
+            ) == 0
+        ) {
+            ESP_LOGI(
+                TAG,
+                "Recognized allowlisted command: %s",
+                command
+            );
 
-    if (
-        strcasecmp(
-            cmd,
-            "UNLOCK_DOORS"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "locks.all.unlock"
-        ) == 0
-    ) {
-        singlecan_cmd_unlock_doors();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
+            COMMAND_MAPPINGS[index]
+                .handler();
 
-    // Windows
-    if (
-        strcasecmp(
-            cmd,
-            "WINDOW_DRIVER_DOWN"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "WINDOW_PASSENGER_DOWN"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "WINDOWS_DOWN"
-        ) == 0
-    ) {
-        singlecan_cmd_windows_down();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "WINDOW_DRIVER_UP"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "WINDOW_PASSENGER_UP"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "WINDOWS_UP"
-        ) == 0
-    ) {
-        singlecan_cmd_windows_up();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Sunroof
-    if (
-        strcasecmp(
-            cmd,
-            "SUNROOF_OPEN"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "MOONROOF_OPEN"
-        ) == 0
-    ) {
-        singlecan_cmd_sunroof_open();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "SUNROOF_CLOSE"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "MOONROOF_CLOSE"
-        ) == 0
-    ) {
-        singlecan_cmd_sunroof_close();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "SUNROOF_VENT"
-        ) == 0
-    ) {
-        singlecan_cmd_sunroof_vent();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Lighting
-    if (
-        strcasecmp(
-            cmd,
-            "HEADLIGHTS_ON"
-        ) == 0
-    ) {
-        singlecan_cmd_headlights_on();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "HEADLIGHTS_OFF"
-        ) == 0
-    ) {
-        singlecan_cmd_headlights_off();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "FOG_LIGHTS_ON"
-        ) == 0
-    ) {
-        singlecan_cmd_fog_lights_on();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "FOG_LIGHTS_OFF"
-        ) == 0
-    ) {
-        singlecan_cmd_fog_lights_off();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "INTERIOR_LIGHTS_ON"
-        ) == 0
-    ) {
-        singlecan_cmd_interior_lights_on();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "INTERIOR_LIGHTS_OFF"
-        ) == 0
-    ) {
-        singlecan_cmd_interior_lights_off();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Climate
-    if (
-        strcasecmp(
-            cmd,
-            "AC_ON"
-        ) == 0
-    ) {
-        singlecan_cmd_ac_on();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "AC_OFF"
-        ) == 0
-    ) {
-        singlecan_cmd_ac_off();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "FAN_UP"
-        ) == 0
-    ) {
-        singlecan_cmd_fan_up();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "FAN_DOWN"
-        ) == 0
-    ) {
-        singlecan_cmd_fan_down();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Audio
-    if (
-        strcasecmp(
-            cmd,
-            "AUDIO_MUTE"
-        ) == 0
-    ) {
-        singlecan_cmd_audio_mute();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "AUDIO_UNMUTE"
-        ) == 0
-    ) {
-        singlecan_cmd_audio_unmute();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Trunk
-    if (
-        strcasecmp(
-            cmd,
-            "TRUNK_OPEN"
-        ) == 0
-    ) {
-        singlecan_cmd_trunk_open();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Horn
-    if (
-        strcasecmp(
-            cmd,
-            "HORN"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "HORN_SHORT"
-        ) == 0
-    ) {
-        singlecan_cmd_horn();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Hazards
-    if (
-        strcasecmp(
-            cmd,
-            "HAZARDS_ON"
-        ) == 0
-    ) {
-        singlecan_cmd_hazards_on();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "HAZARDS_OFF"
-        ) == 0
-    ) {
-        singlecan_cmd_hazards_off();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    // Defrost
-    if (
-        strcasecmp(
-            cmd,
-            "DEFROST_ON"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "DEFROST_FRONT"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "DEFROST_REAR"
-        ) == 0
-    ) {
-        singlecan_cmd_defrost_on();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
-    }
-
-    if (
-        strcasecmp(
-            cmd,
-            "DEFROST_OFF"
-        ) == 0 ||
-        strcasecmp(
-            cmd,
-            "DEFROST_REAR_OFF"
-        ) == 0
-    ) {
-        singlecan_cmd_defrost_off();
-        return COMMAND_RESULT_NOT_IMPLEMENTED;
+            /*
+             * Every current handler is still a non-transmitting
+             * stub. Therefore recognition must not return ok.
+             */
+            return COMMAND_RESULT_NOT_IMPLEMENTED;
+        }
     }
 
     ESP_LOGW(
@@ -635,7 +577,7 @@ static command_result_t dispatch_command(
 }
 
 // ------------------------------------------------------------
-// INTERNAL: PROCESS JSON COMMAND ENVELOPE
+// PROCESS JSON COMMAND ENVELOPE
 // ------------------------------------------------------------
 
 static void process_json_packet(
@@ -746,10 +688,6 @@ static void process_json_packet(
             "JSON packet is missing string field: type"
         );
 
-        /*
-         * A command field may not be available, so this malformed
-         * envelope is logged and rejected without fabricating one.
-         */
         cJSON_Delete(
             root
         );
@@ -794,6 +732,9 @@ static void process_json_packet(
         return;
     }
 
+    const char *command =
+        command_item->valuestring;
+
     if (
         value_item != NULL &&
         !cJSON_IsString(
@@ -808,7 +749,7 @@ static void process_json_packet(
         send_response(
             packet_id,
             "error",
-            command_item->valuestring,
+            command,
             "invalid_value_type"
         );
 
@@ -818,9 +759,6 @@ static void process_json_packet(
 
         return;
     }
-
-    const char *command =
-        command_item->valuestring;
 
     const char *value =
         NULL;
@@ -860,11 +798,20 @@ static void process_json_packet(
                 NULL
             );
         } else {
+            const char *reason =
+                value != NULL &&
+                strcasecmp(
+                    value,
+                    "dual"
+                ) == 0
+                    ? "dual_module_not_supported"
+                    : "invalid_module";
+
             send_response(
                 packet_id,
                 "error",
                 command,
-                "invalid_module"
+                reason
             );
         }
 
@@ -875,13 +822,10 @@ static void process_json_packet(
         return;
     }
 
-    if (
-        s_module_mode ==
-        MODULE_MODE_NOT_CONFIGURED
-    ) {
+    if (!s_single_can_configured) {
         ESP_LOGW(
             TAG,
-            "Vehicle command rejected before module configuration"
+            "Vehicle command rejected before Single-CAN configuration"
         );
 
         send_response(
@@ -928,7 +872,7 @@ static void process_json_packet(
 }
 
 // ------------------------------------------------------------
-// PUBLIC ENTRY POINT: CALLED WITH ONE COMPLETE SPP FRAME
+// PUBLIC COMMAND PROCESSOR
 // ------------------------------------------------------------
 
 void singlecan_commands_process(
@@ -953,20 +897,15 @@ void singlecan_commands_process(
         return;
     }
 
-    /*
-     * The legacy raw-command fallback has been removed.
-     * Every request must use the documented JSON envelope.
-     */
     process_json_packet(
         packet
     );
 }
 
 // ------------------------------------------------------------
-// HIGH-LEVEL VEHICLE COMMANDS: SAFE STUBS
+// HIGH-LEVEL VEHICLE COMMAND STUBS
 // ------------------------------------------------------------
-// These functions do not send real CAN frames.
-// Recognized stubs return unsupported/not_implemented.
+// These handlers intentionally do not send CAN frames.
 // ------------------------------------------------------------
 
 void singlecan_cmd_lock_doors(void)
