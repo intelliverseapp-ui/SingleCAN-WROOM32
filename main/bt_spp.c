@@ -15,6 +15,7 @@
 
 #include "bt_spp.h"
 #include "bt_spp_framer.h"
+#include "bt_spp_session.h"
 #include "bt_spp_writer.h"
 #include "singlecan_commands.h"
 
@@ -32,18 +33,6 @@ static EventGroupHandle_t s_readiness_events =
 
 static portMUX_TYPE s_state_lock =
     portMUX_INITIALIZER_UNLOCKED;
-
-static volatile uint32_t s_spp_handle =
-    0;
-
-static volatile uint32_t s_session_id =
-    0;
-
-static volatile int s_spp_connected =
-    0;
-
-static volatile int s_spp_congested =
-    0;
 
 static volatile int s_spp_server_ready =
     0;
@@ -83,35 +72,8 @@ static void spp_event_handler(
 );
 
 // ------------------------------------------------------------
-// SESSION GENERATION
+// SERVER READINESS
 // ------------------------------------------------------------
-
-static uint32_t bt_spp_next_session_id(void)
-{
-    uint32_t next_session_id;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    s_session_id +=
-        1;
-
-    if (s_session_id == 0) {
-        s_session_id =
-            1;
-    }
-
-    next_session_id =
-        s_session_id;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    return next_session_id;
-}
-
 // ------------------------------------------------------------
 // SERVER READINESS
 // ------------------------------------------------------------
@@ -258,65 +220,20 @@ static esp_err_t bt_spp_create_readiness_events(void)
 }
 
 // ------------------------------------------------------------
-// EXTRACTED WRITER SESSION BRIDGE
+// EXTRACTED SESSION AND WRITER BRIDGE
 // ------------------------------------------------------------
-
-static void bt_spp_provide_writer_session(
-    bt_spp_writer_session_t *session
-)
-{
-    if (session == NULL) {
-        return;
-    }
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    session->handle =
-        s_spp_handle;
-
-    session->session_id =
-        s_session_id;
-
-    session->server_ready =
-        s_spp_server_ready;
-
-    session->connected =
-        s_spp_connected;
-
-    session->congested =
-        s_spp_congested;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-}
 
 static void bt_spp_disconnect_writer_session(
     uint32_t handle,
     uint32_t session_id
 )
 {
-    int session_matches =
-        0;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    session_matches =
-        s_spp_connected &&
-        s_spp_handle ==
-            handle &&
-        s_session_id ==
-            session_id;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    if (!session_matches) {
+    if (
+        !bt_spp_session_matches(
+            handle,
+            session_id
+        )
+    ) {
         ESP_LOGW(
             TAG,
             "Ignoring stale writer disconnect request"
@@ -342,73 +259,39 @@ static void bt_spp_disconnect_writer_session(
             )
         );
 
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
+        /*
+         * The Bluetooth stack could not complete the requested
+         * disconnect. Invalidate local ownership so no further work
+         * can be submitted to the failed session.
+         */
         if (
-            s_spp_connected &&
-            s_spp_handle ==
-                handle &&
-            s_session_id ==
+            bt_spp_session_matches(
+                handle,
                 session_id
+            )
         ) {
-            s_spp_connected =
-                0;
+            bt_spp_session_force_close();
 
-            s_spp_handle =
-                0;
+            singlecan_commands_reset_session();
 
-            s_spp_congested =
-                0;
+            bt_spp_framer_reset();
 
-            s_session_id +=
-                1;
-
-            if (s_session_id == 0) {
-                s_session_id =
-                    1;
-            }
+            bt_spp_writer_on_disconnected();
         }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
-        singlecan_commands_reset_session();
-
-        bt_spp_framer_reset();
-
-        bt_spp_writer_on_disconnected();
     }
 }
 
-static void bt_spp_cancel_active_session(void)
+static void bt_spp_complete_active_session_close(
+    uint32_t handle
+)
 {
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    s_spp_connected =
-        0;
-
-    s_spp_handle =
-        0;
-
-    s_spp_congested =
-        0;
-
-    s_session_id +=
-        1;
-
-    if (s_session_id == 0) {
-        s_session_id =
-            1;
+    if (
+        !bt_spp_session_close(
+            handle
+        )
+    ) {
+        return;
     }
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
 
     singlecan_commands_reset_session();
 
@@ -417,6 +300,9 @@ static void bt_spp_cancel_active_session(void)
     bt_spp_writer_on_disconnected();
 }
 
+// ------------------------------------------------------------
+// PUBLIC READINESS AND CONNECTION ACCESSORS
+// ------------------------------------------------------------
 // ------------------------------------------------------------
 // PUBLIC READINESS AND CONNECTION ACCESSORS
 // ------------------------------------------------------------
@@ -513,38 +399,12 @@ esp_err_t bt_spp_wait_until_ready(
 
 int bt_spp_is_connected(void)
 {
-    int connected;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    connected =
-        s_spp_connected;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    return connected;
+    return bt_spp_session_is_connected();
 }
 
 uint32_t bt_spp_get_handle(void)
 {
-    uint32_t handle;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    handle =
-        s_spp_handle;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    return handle;
+    return bt_spp_session_get_handle();
 }
 
 // ------------------------------------------------------------
@@ -555,26 +415,11 @@ esp_err_t bt_spp_send(
     const char *message
 )
 {
-    uint32_t current_session_id;
-    int session_available;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    current_session_id =
-        s_session_id;
-
-    session_available =
-        s_spp_server_ready &&
-        s_spp_connected &&
-        s_spp_handle != 0;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    if (!session_available) {
+    if (
+        !bt_spp_is_server_ready() ||
+        !bt_spp_session_is_connected() ||
+        bt_spp_session_get_handle() == 0
+    ) {
         ESP_LOGW(
             TAG,
             "Cannot queue SPP message: no active session"
@@ -585,7 +430,7 @@ esp_err_t bt_spp_send(
 
     return bt_spp_writer_send(
         message,
-        current_session_id
+        bt_spp_session_get_id()
     );
 }
 
@@ -729,54 +574,22 @@ static void spp_event_handler(
         const uint32_t new_handle =
             param->srv_open.handle;
 
-        int reject_connection =
-            0;
-
         uint32_t accepted_session_id =
             0;
 
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
+        const int connection_is_valid =
+            bt_spp_is_server_ready() &&
+            param->srv_open.status ==
+                ESP_SPP_SUCCESS;
 
-        if (
-            !s_spp_server_ready ||
-            param->srv_open.status !=
-                ESP_SPP_SUCCESS ||
-            (
-                s_spp_connected &&
-                s_spp_handle != 0
-            )
-        ) {
-            reject_connection =
-                1;
-        } else {
-            s_spp_connected =
-                1;
+        const int connection_accepted =
+            connection_is_valid &&
+            bt_spp_session_accept(
+                new_handle,
+                &accepted_session_id
+            );
 
-            s_spp_handle =
-                new_handle;
-
-            s_spp_congested =
-                0;
-
-            s_session_id +=
-                1;
-
-            if (s_session_id == 0) {
-                s_session_id =
-                    1;
-            }
-
-            accepted_session_id =
-                s_session_id;
-        }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
-        if (reject_connection) {
+        if (!connection_accepted) {
             ESP_LOGW(
                 TAG,
                 "Rejecting additional or invalid SPP client, "
@@ -789,7 +602,10 @@ static void spp_event_handler(
                     new_handle
                 );
 
-            if (disconnect_result != ESP_OK) {
+            if (
+                disconnect_result !=
+                ESP_OK
+            ) {
                 ESP_LOGE(
                     TAG,
                     "Failed to disconnect rejected SPP client: %s",
@@ -823,22 +639,10 @@ static void spp_event_handler(
         const uint32_t closed_handle =
             param->close.handle;
 
-        uint32_t active_handle;
-
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        active_handle =
-            s_spp_handle;
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
         if (
-            closed_handle !=
-            active_handle
+            !bt_spp_session_handle_is_active(
+                closed_handle
+            )
         ) {
             ESP_LOGI(
                 TAG,
@@ -856,30 +660,21 @@ static void spp_event_handler(
             closed_handle
         );
 
-        bt_spp_cancel_active_session();
+        bt_spp_complete_active_session_close(
+            closed_handle
+        );
 
         break;
     }
 
     case ESP_SPP_DATA_IND_EVT: {
-        uint32_t active_handle;
-        int active_session;
+        const uint32_t active_handle =
+            bt_spp_session_get_handle();
 
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        active_handle =
-            s_spp_handle;
-
-        active_session =
-            s_spp_server_ready &&
-            s_spp_connected &&
+        const int active_session =
+            bt_spp_is_server_ready() &&
+            bt_spp_session_is_connected() &&
             active_handle != 0;
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
 
         if (
             !active_session ||
@@ -913,30 +708,13 @@ static void spp_event_handler(
     }
 
     case ESP_SPP_CONG_EVT: {
-        uint32_t active_handle;
-        int event_matches_active_handle;
-
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        active_handle =
-            s_spp_handle;
-
-        event_matches_active_handle =
-            param->cong.handle ==
-            active_handle;
-
-        if (event_matches_active_handle) {
-            s_spp_congested =
+        const int event_matches_active_handle =
+            bt_spp_session_set_congested(
+                param->cong.handle,
                 param->cong.cong
                     ? 1
-                    : 0;
-        }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
+                    : 0
+            );
 
         if (!event_matches_active_handle) {
             ESP_LOGW(
@@ -1006,31 +784,9 @@ esp_err_t bt_spp_init(void)
 
     singlecan_commands_reset_session();
 
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
+    bt_spp_session_init();
 
-    s_spp_handle =
-        0;
-
-    s_session_id =
-        0;
-
-    s_spp_connected =
-        0;
-
-    s_spp_congested =
-        0;
-
-    s_spp_server_ready =
-        0;
-
-    s_spp_startup_error =
-        ESP_ERR_INVALID_STATE;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
+    bt_spp_reset_readiness_state();
 
     const esp_err_t readiness_result =
         bt_spp_create_readiness_events();
@@ -1041,7 +797,7 @@ esp_err_t bt_spp_init(void)
 
     const esp_err_t writer_result =
         bt_spp_writer_init(
-            bt_spp_provide_writer_session,
+            bt_spp_session_get_writer_snapshot,
             bt_spp_disconnect_writer_session
         );
 
