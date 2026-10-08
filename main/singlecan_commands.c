@@ -4,18 +4,35 @@
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "singlecan_can.h"
 
+#include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 #include <strings.h>
 
-static const char *TAG = "SingleCAN_CMDS";
+static const char *TAG =
+    "SingleCAN_CMDS";
+
+typedef enum {
+    MODULE_MODE_NOT_CONFIGURED = 0,
+    MODULE_MODE_SINGLE_CAN,
+    MODULE_MODE_DUAL_CAN
+} module_mode_t;
+
+typedef enum {
+    COMMAND_RESULT_NOT_IMPLEMENTED = 0,
+    COMMAND_RESULT_UNSUPPORTED
+} command_result_t;
+
+static module_mode_t s_module_mode =
+    MODULE_MODE_NOT_CONFIGURED;
 
 // ------------------------------------------------------------
 // INTERNAL: SEND JSON RESPONSE TO BABYNODE AUTOMOTIVE
 // ------------------------------------------------------------
+
 static void send_response(
     int packet_id,
     const char *status,
@@ -23,12 +40,35 @@ static void send_response(
     const char *reason
 )
 {
-    cJSON *response = cJSON_CreateObject();
+    if (
+        packet_id < 0 ||
+        status == NULL ||
+        status[0] == '\0' ||
+        command == NULL ||
+        command[0] == '\0'
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Cannot create response with invalid fields"
+        );
 
-    if (response == NULL) {
-        ESP_LOGE(TAG, "Failed to create response JSON object");
         return;
     }
+
+    cJSON *response =
+        cJSON_CreateObject();
+
+    if (response == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Failed to create response JSON object"
+        );
+
+        return;
+    }
+
+    bool response_valid =
+        true;
 
     if (
         cJSON_AddNumberToObject(
@@ -37,95 +77,171 @@ static void send_response(
             packet_id
         ) == NULL
     ) {
-        ESP_LOGE(TAG, "Failed to add response id");
-        cJSON_Delete(response);
-        return;
+        response_valid =
+            false;
     }
 
     if (
+        response_valid &&
         cJSON_AddStringToObject(
             response,
             "type",
             "response"
         ) == NULL
     ) {
-        ESP_LOGE(TAG, "Failed to add response type");
-        cJSON_Delete(response);
-        return;
+        response_valid =
+            false;
     }
 
     if (
+        response_valid &&
         cJSON_AddStringToObject(
             response,
             "status",
             status
         ) == NULL
     ) {
-        ESP_LOGE(TAG, "Failed to add response status");
-        cJSON_Delete(response);
-        return;
+        response_valid =
+            false;
     }
 
     if (
-        command != NULL &&
+        response_valid &&
         cJSON_AddStringToObject(
             response,
             "command",
             command
         ) == NULL
     ) {
-        ESP_LOGE(TAG, "Failed to add response command");
-        cJSON_Delete(response);
-        return;
+        response_valid =
+            false;
     }
 
     if (
+        response_valid &&
         reason != NULL &&
+        reason[0] != '\0' &&
         cJSON_AddStringToObject(
             response,
             "reason",
             reason
         ) == NULL
     ) {
-        ESP_LOGE(TAG, "Failed to add response reason");
-        cJSON_Delete(response);
+        response_valid =
+            false;
+    }
+
+    if (!response_valid) {
+        ESP_LOGE(
+            TAG,
+            "Failed to construct response JSON"
+        );
+
+        cJSON_Delete(
+            response
+        );
+
         return;
     }
 
     char *response_text =
-        cJSON_PrintUnformatted(response);
+        cJSON_PrintUnformatted(
+            response
+        );
 
     if (response_text == NULL) {
-        ESP_LOGE(TAG, "Failed to serialize response JSON");
-        cJSON_Delete(response);
+        ESP_LOGE(
+            TAG,
+            "Failed to serialize response JSON"
+        );
+
+        cJSON_Delete(
+            response
+        );
+
         return;
     }
 
     ESP_LOGI(
         TAG,
-        "Sending response: %s",
-        response_text
+        "Sending response: id=%d status=%s command=%s",
+        packet_id,
+        status,
+        command
     );
 
-    esp_err_t result =
-        bt_spp_send(response_text);
+    const esp_err_t result =
+        bt_spp_send(
+            response_text
+        );
 
     if (result != ESP_OK) {
         ESP_LOGE(
             TAG,
             "Failed to send response: %s",
-            esp_err_to_name(result)
+            esp_err_to_name(
+                result
+            )
         );
     }
 
-    cJSON_free(response_text);
-    cJSON_Delete(response);
+    cJSON_free(
+        response_text
+    );
+
+    cJSON_Delete(
+        response
+    );
+}
+
+// ------------------------------------------------------------
+// INTERNAL: STRICT REQUEST-ID VALIDATION
+// ------------------------------------------------------------
+
+static bool parse_packet_id(
+    const cJSON *id_item,
+    int *packet_id
+)
+{
+    if (
+        id_item == NULL ||
+        packet_id == NULL ||
+        !cJSON_IsNumber(
+            id_item
+        )
+    ) {
+        return false;
+    }
+
+    const double numeric_id =
+        id_item->valuedouble;
+
+    if (
+        !isfinite(
+            numeric_id
+        ) ||
+        numeric_id < 0.0 ||
+        numeric_id > (double)INT_MAX ||
+        floor(
+            numeric_id
+        ) != numeric_id
+    ) {
+        return false;
+    }
+
+    *packet_id =
+        (int)numeric_id;
+
+    return true;
 }
 
 // ------------------------------------------------------------
 // INTERNAL: MODULE CONFIGURATION
 // ------------------------------------------------------------
-static bool process_module_config(const char *value)
+
+static bool process_module_config(
+    const char *value
+)
 {
     if (
         value == NULL ||
@@ -145,6 +261,9 @@ static bool process_module_config(const char *value)
             "single"
         ) == 0
     ) {
+        s_module_mode =
+            MODULE_MODE_SINGLE_CAN;
+
         ESP_LOGI(
             TAG,
             "Module configured: SINGLE_CAN"
@@ -159,6 +278,9 @@ static bool process_module_config(const char *value)
             "dual"
         ) == 0
     ) {
+        s_module_mode =
+            MODULE_MODE_DUAL_CAN;
+
         ESP_LOGI(
             TAG,
             "Module configured: DUAL_CAN"
@@ -169,8 +291,7 @@ static bool process_module_config(const char *value)
 
     ESP_LOGW(
         TAG,
-        "Unknown module configuration: %s",
-        value
+        "Unknown module configuration"
     );
 
     return false;
@@ -179,18 +300,16 @@ static bool process_module_config(const char *value)
 // ------------------------------------------------------------
 // INTERNAL: CANONICAL COMMAND DISPATCHER
 // ------------------------------------------------------------
-static bool dispatch_command(const char *cmd)
+
+static command_result_t dispatch_command(
+    const char *cmd
+)
 {
     if (
         cmd == NULL ||
         cmd[0] == '\0'
     ) {
-        ESP_LOGW(
-            TAG,
-            "Empty command received"
-        );
-
-        return false;
+        return COMMAND_RESULT_UNSUPPORTED;
     }
 
     ESP_LOGI(
@@ -211,7 +330,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_lock_doors();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -225,7 +344,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_unlock_doors();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Windows
@@ -244,7 +363,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_windows_down();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -262,7 +381,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_windows_up();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Sunroof
@@ -277,7 +396,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_sunroof_open();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -291,7 +410,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_sunroof_close();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -301,10 +420,10 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_sunroof_vent();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
-    // Lights
+    // Lighting
     if (
         strcasecmp(
             cmd,
@@ -312,7 +431,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_headlights_on();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -322,7 +441,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_headlights_off();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -332,7 +451,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_fog_lights_on();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -342,7 +461,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_fog_lights_off();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -352,7 +471,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_interior_lights_on();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -362,7 +481,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_interior_lights_off();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Climate
@@ -373,7 +492,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_ac_on();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -383,7 +502,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_ac_off();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -393,7 +512,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_fan_up();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -403,7 +522,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_fan_down();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Audio
@@ -414,7 +533,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_audio_mute();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -424,7 +543,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_audio_unmute();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Trunk
@@ -435,7 +554,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_trunk_open();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Horn
@@ -450,7 +569,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_horn();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Hazards
@@ -461,7 +580,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_hazards_on();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -471,7 +590,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_hazards_off();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     // Defrost
@@ -490,7 +609,7 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_defrost_on();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     if (
@@ -504,44 +623,58 @@ static bool dispatch_command(const char *cmd)
         ) == 0
     ) {
         singlecan_cmd_defrost_off();
-        return true;
+        return COMMAND_RESULT_NOT_IMPLEMENTED;
     }
 
     ESP_LOGW(
         TAG,
-        "Unsupported canonical command: %s",
-        cmd
+        "Unsupported canonical command"
     );
 
-    return false;
+    return COMMAND_RESULT_UNSUPPORTED;
 }
 
 // ------------------------------------------------------------
 // INTERNAL: PROCESS JSON COMMAND ENVELOPE
 // ------------------------------------------------------------
-static bool process_json_packet(const char *packet)
+
+static void process_json_packet(
+    const char *packet
+)
 {
+    const char *parse_end =
+        NULL;
+
     cJSON *root =
-        cJSON_Parse(packet);
+        cJSON_ParseWithOpts(
+            packet,
+            &parse_end,
+            true
+        );
 
     if (root == NULL) {
-        const char *error_pointer =
-            cJSON_GetErrorPtr();
+        ESP_LOGW(
+            TAG,
+            "Invalid JSON command envelope"
+        );
 
-        if (error_pointer != NULL) {
-            ESP_LOGW(
-                TAG,
-                "JSON parse failed near: %s",
-                error_pointer
-            );
-        } else {
-            ESP_LOGW(
-                TAG,
-                "JSON parse failed"
-            );
-        }
+        return;
+    }
 
-        return false;
+    if (
+        parse_end == NULL ||
+        *parse_end != '\0'
+    ) {
+        ESP_LOGW(
+            TAG,
+            "JSON envelope contains trailing data"
+        );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
     }
 
     if (!cJSON_IsObject(root)) {
@@ -550,8 +683,11 @@ static bool process_json_packet(const char *packet)
             "JSON root is not an object"
         );
 
-        cJSON_Delete(root);
-        return true;
+        cJSON_Delete(
+            root
+        );
+
+        return;
     }
 
     const cJSON *id_item =
@@ -578,26 +714,31 @@ static bool process_json_packet(const char *packet)
             "value"
         );
 
-    int packet_id = 0;
+    int packet_id =
+        -1;
 
-    if (cJSON_IsNumber(id_item)) {
-        packet_id =
-            id_item->valueint;
-
-        ESP_LOGI(
-            TAG,
-            "Packet ID: %d",
-            packet_id
-        );
-    } else {
+    if (
+        !parse_packet_id(
+            id_item,
+            &packet_id
+        )
+    ) {
         ESP_LOGW(
             TAG,
-            "JSON packet is missing numeric field: id"
+            "JSON packet contains an invalid id"
         );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
     }
 
     if (
-        !cJSON_IsString(type_item) ||
+        !cJSON_IsString(
+            type_item
+        ) ||
         type_item->valuestring == NULL
     ) {
         ESP_LOGW(
@@ -605,15 +746,15 @@ static bool process_json_packet(const char *packet)
             "JSON packet is missing string field: type"
         );
 
-        send_response(
-            packet_id,
-            "error",
-            NULL,
-            "missing_type"
+        /*
+         * A command field may not be available, so this malformed
+         * envelope is logged and rejected without fabricating one.
+         */
+        cJSON_Delete(
+            root
         );
 
-        cJSON_Delete(root);
-        return true;
+        return;
     }
 
     if (
@@ -624,23 +765,20 @@ static bool process_json_packet(const char *packet)
     ) {
         ESP_LOGW(
             TAG,
-            "Unsupported JSON packet type: %s",
-            type_item->valuestring
+            "Unsupported JSON packet type"
         );
 
-        send_response(
-            packet_id,
-            "error",
-            NULL,
-            "unsupported_type"
+        cJSON_Delete(
+            root
         );
 
-        cJSON_Delete(root);
-        return true;
+        return;
     }
 
     if (
-        !cJSON_IsString(command_item) ||
+        !cJSON_IsString(
+            command_item
+        ) ||
         command_item->valuestring == NULL ||
         command_item->valuestring[0] == '\0'
     ) {
@@ -649,24 +787,48 @@ static bool process_json_packet(const char *packet)
             "JSON packet is missing string field: command"
         );
 
+        cJSON_Delete(
+            root
+        );
+
+        return;
+    }
+
+    if (
+        value_item != NULL &&
+        !cJSON_IsString(
+            value_item
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "JSON value field must be a string"
+        );
+
         send_response(
             packet_id,
             "error",
-            NULL,
-            "missing_command"
+            command_item->valuestring,
+            "invalid_value_type"
         );
 
-        cJSON_Delete(root);
-        return true;
+        cJSON_Delete(
+            root
+        );
+
+        return;
     }
 
     const char *command =
         command_item->valuestring;
 
-    const char *value = NULL;
+    const char *value =
+        NULL;
 
     if (
-        cJSON_IsString(value_item) &&
+        cJSON_IsString(
+            value_item
+        ) &&
         value_item->valuestring != NULL
     ) {
         value =
@@ -675,19 +837,10 @@ static bool process_json_packet(const char *packet)
 
     ESP_LOGI(
         TAG,
-        "Parsed command: %s",
+        "Validated command envelope: id=%d command=%s",
+        packet_id,
         command
     );
-
-    if (value != NULL) {
-        ESP_LOGI(
-            TAG,
-            "Parsed value: %s",
-            value
-        );
-    }
-
-    bool command_succeeded = false;
 
     if (
         strcasecmp(
@@ -695,19 +848,70 @@ static bool process_json_packet(const char *packet)
             "config.module"
         ) == 0
     ) {
-        command_succeeded =
-            process_module_config(value);
-    } else {
-        command_succeeded =
-            dispatch_command(command);
+        if (
+            process_module_config(
+                value
+            )
+        ) {
+            send_response(
+                packet_id,
+                "ok",
+                command,
+                NULL
+            );
+        } else {
+            send_response(
+                packet_id,
+                "error",
+                command,
+                "invalid_module"
+            );
+        }
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
     }
 
-    if (command_succeeded) {
+    if (
+        s_module_mode ==
+        MODULE_MODE_NOT_CONFIGURED
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Vehicle command rejected before module configuration"
+        );
+
         send_response(
             packet_id,
-            "ok",
+            "error",
             command,
-            NULL
+            "module_not_configured"
+        );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
+    }
+
+    const command_result_t command_result =
+        dispatch_command(
+            command
+        );
+
+    if (
+        command_result ==
+        COMMAND_RESULT_NOT_IMPLEMENTED
+    ) {
+        send_response(
+            packet_id,
+            "unsupported",
+            command,
+            "not_implemented"
         );
     } else {
         send_response(
@@ -718,14 +922,18 @@ static bool process_json_packet(const char *packet)
         );
     }
 
-    cJSON_Delete(root);
-    return true;
+    cJSON_Delete(
+        root
+    );
 }
 
 // ------------------------------------------------------------
-// PUBLIC ENTRY POINT: CALLED FROM BLUETOOTH SPP
+// PUBLIC ENTRY POINT: CALLED WITH ONE COMPLETE SPP FRAME
 // ------------------------------------------------------------
-void singlecan_commands_process(const char *packet)
+
+void singlecan_commands_process(
+    const char *packet
+)
 {
     if (packet == NULL) {
         ESP_LOGE(
@@ -745,37 +953,27 @@ void singlecan_commands_process(const char *packet)
         return;
     }
 
-    ESP_LOGI(
-        TAG,
-        "Received packet: %s",
+    /*
+     * The legacy raw-command fallback has been removed.
+     * Every request must use the documented JSON envelope.
+     */
+    process_json_packet(
         packet
     );
-
-    if (process_json_packet(packet)) {
-        return;
-    }
-
-    ESP_LOGW(
-        TAG,
-        "Packet is not valid JSON; trying legacy command format"
-    );
-
-    dispatch_command(packet);
 }
 
 // ------------------------------------------------------------
 // HIGH-LEVEL VEHICLE COMMANDS: SAFE STUBS
 // ------------------------------------------------------------
-// These functions do not send real CAN frames yet.
-// Vehicle-specific CAN mappings will be added after validation.
+// These functions do not send real CAN frames.
+// Recognized stubs return unsupported/not_implemented.
 // ------------------------------------------------------------
 
-// Doors
 void singlecan_cmd_lock_doors(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: lock doors (TODO: map to CAN frame)"
+        "CMD recognized: lock doors; mapping not implemented"
     );
 }
 
@@ -783,16 +981,15 @@ void singlecan_cmd_unlock_doors(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: unlock doors (TODO: map to CAN frame)"
+        "CMD recognized: unlock doors; mapping not implemented"
     );
 }
 
-// Windows
 void singlecan_cmd_windows_down(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: windows down (TODO: map to CAN frame)"
+        "CMD recognized: windows down; mapping not implemented"
     );
 }
 
@@ -800,16 +997,15 @@ void singlecan_cmd_windows_up(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: windows up (TODO: map to CAN frame)"
+        "CMD recognized: windows up; mapping not implemented"
     );
 }
 
-// Sunroof
 void singlecan_cmd_sunroof_open(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: sunroof open (TODO: map to CAN frame)"
+        "CMD recognized: sunroof open; mapping not implemented"
     );
 }
 
@@ -817,7 +1013,7 @@ void singlecan_cmd_sunroof_close(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: sunroof close (TODO: map to CAN frame)"
+        "CMD recognized: sunroof close; mapping not implemented"
     );
 }
 
@@ -825,16 +1021,15 @@ void singlecan_cmd_sunroof_vent(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: sunroof vent (TODO: map to CAN frame)"
+        "CMD recognized: sunroof vent; mapping not implemented"
     );
 }
 
-// Lights
 void singlecan_cmd_headlights_on(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: headlights on (TODO: map to CAN frame)"
+        "CMD recognized: headlights on; mapping not implemented"
     );
 }
 
@@ -842,7 +1037,7 @@ void singlecan_cmd_headlights_off(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: headlights off (TODO: map to CAN frame)"
+        "CMD recognized: headlights off; mapping not implemented"
     );
 }
 
@@ -850,7 +1045,7 @@ void singlecan_cmd_fog_lights_on(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: fog lights on (TODO: map to CAN frame)"
+        "CMD recognized: fog lights on; mapping not implemented"
     );
 }
 
@@ -858,7 +1053,7 @@ void singlecan_cmd_fog_lights_off(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: fog lights off (TODO: map to CAN frame)"
+        "CMD recognized: fog lights off; mapping not implemented"
     );
 }
 
@@ -866,7 +1061,7 @@ void singlecan_cmd_interior_lights_on(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: interior lights on (TODO: map to CAN frame)"
+        "CMD recognized: interior lights on; mapping not implemented"
     );
 }
 
@@ -874,16 +1069,15 @@ void singlecan_cmd_interior_lights_off(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: interior lights off (TODO: map to CAN frame)"
+        "CMD recognized: interior lights off; mapping not implemented"
     );
 }
 
-// Climate
 void singlecan_cmd_ac_on(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: AC on (TODO: map to CAN frame)"
+        "CMD recognized: AC on; mapping not implemented"
     );
 }
 
@@ -891,7 +1085,7 @@ void singlecan_cmd_ac_off(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: AC off (TODO: map to CAN frame)"
+        "CMD recognized: AC off; mapping not implemented"
     );
 }
 
@@ -899,7 +1093,7 @@ void singlecan_cmd_fan_up(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: fan up (TODO: map to CAN frame)"
+        "CMD recognized: fan up; mapping not implemented"
     );
 }
 
@@ -907,16 +1101,15 @@ void singlecan_cmd_fan_down(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: fan down (TODO: map to CAN frame)"
+        "CMD recognized: fan down; mapping not implemented"
     );
 }
 
-// Audio
 void singlecan_cmd_audio_mute(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: audio mute (TODO: map to CAN frame)"
+        "CMD recognized: audio mute; mapping not implemented"
     );
 }
 
@@ -924,34 +1117,31 @@ void singlecan_cmd_audio_unmute(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: audio unmute (TODO: map to CAN frame)"
+        "CMD recognized: audio unmute; mapping not implemented"
     );
 }
 
-// Trunk
 void singlecan_cmd_trunk_open(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: trunk open (TODO: map to CAN frame)"
+        "CMD recognized: trunk open; mapping not implemented"
     );
 }
 
-// Horn
 void singlecan_cmd_horn(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: horn (TODO: map to CAN frame)"
+        "CMD recognized: horn; mapping not implemented"
     );
 }
 
-// Hazards
 void singlecan_cmd_hazards_on(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: hazards on (TODO: map to CAN frame)"
+        "CMD recognized: hazards on; mapping not implemented"
     );
 }
 
@@ -959,16 +1149,15 @@ void singlecan_cmd_hazards_off(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: hazards off (TODO: map to CAN frame)"
+        "CMD recognized: hazards off; mapping not implemented"
     );
 }
 
-// Defrost
 void singlecan_cmd_defrost_on(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: defrost on (TODO: map to CAN frame)"
+        "CMD recognized: defrost on; mapping not implemented"
     );
 }
 
@@ -976,6 +1165,6 @@ void singlecan_cmd_defrost_off(void)
 {
     ESP_LOGI(
         TAG,
-        "CMD: defrost off (TODO: map to CAN frame)"
+        "CMD recognized: defrost off; mapping not implemented"
     );
 }
