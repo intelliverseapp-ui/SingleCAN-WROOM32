@@ -5,6 +5,7 @@ idf_component_register(
         "singlecan_can.c"
         "singlecan_commands.c"
         "singlecan_command_handlers.c"
+        "singlecan_responses.c"
         "singlecan_leds.c"
         "bt_spp.c"
         "bt_spp_framer.c"

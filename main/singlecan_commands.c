@@ -1,5 +1,6 @@
 #include "singlecan_commands.h"
 #include "singlecan_command_handlers.h"
+#include "singlecan_responses.h"
 
 #include "bt_spp.h"
 #include "cJSON.h"
@@ -73,13 +74,6 @@ static bool s_request_rate_limit_logged =
 // ------------------------------------------------------------
 // FORWARD DECLARATIONS
 // ------------------------------------------------------------
-
-static void send_response(
-    int packet_id,
-    const char *status,
-    const char *command,
-    const char *reason
-);
 
 static bool parse_packet_id(
     const cJSON *id_item,
@@ -509,173 +503,6 @@ static bool validate_object_schema(
     }
 
     return true;
-}
-
-// ------------------------------------------------------------
-// SEND JSON RESPONSE
-// ------------------------------------------------------------
-
-static void send_response(
-    int packet_id,
-    const char *status,
-    const char *command,
-    const char *reason
-)
-{
-    if (
-        packet_id < 0 ||
-        status == NULL ||
-        status[0] == '\0' ||
-        command == NULL ||
-        command[0] == '\0'
-    ) {
-        ESP_LOGE(
-            TAG,
-            "Cannot create response with invalid fields"
-        );
-
-        return;
-    }
-
-    cJSON *response =
-        cJSON_CreateObject();
-
-    if (response == NULL) {
-        ESP_LOGE(
-            TAG,
-            "Failed to create response JSON object"
-        );
-
-        return;
-    }
-
-    bool valid =
-        true;
-
-    if (
-        cJSON_AddNumberToObject(
-            response,
-            "id",
-            packet_id
-        ) == NULL
-    ) {
-        valid =
-            false;
-    }
-
-    if (
-        valid &&
-        cJSON_AddStringToObject(
-            response,
-            "type",
-            "response"
-        ) == NULL
-    ) {
-        valid =
-            false;
-    }
-
-    if (
-        valid &&
-        cJSON_AddStringToObject(
-            response,
-            "status",
-            status
-        ) == NULL
-    ) {
-        valid =
-            false;
-    }
-
-    if (
-        valid &&
-        cJSON_AddStringToObject(
-            response,
-            "command",
-            command
-        ) == NULL
-    ) {
-        valid =
-            false;
-    }
-
-    if (
-        valid &&
-        reason != NULL &&
-        reason[0] != '\0' &&
-        cJSON_AddStringToObject(
-            response,
-            "reason",
-            reason
-        ) == NULL
-    ) {
-        valid =
-            false;
-    }
-
-    if (!valid) {
-        ESP_LOGE(
-            TAG,
-            "Failed to construct response JSON"
-        );
-
-        cJSON_Delete(
-            response
-        );
-
-        return;
-    }
-
-    char *response_text =
-        cJSON_PrintUnformatted(
-            response
-        );
-
-    if (response_text == NULL) {
-        ESP_LOGE(
-            TAG,
-            "Failed to serialize response JSON"
-        );
-
-        cJSON_Delete(
-            response
-        );
-
-        return;
-    }
-
-    ESP_LOGI(
-        TAG,
-        "Sending response: id=%d status=%s",
-        packet_id,
-        status
-    );
-
-    const esp_err_t send_result =
-        bt_spp_send(
-            response_text
-        );
-
-    if (
-        send_result !=
-        ESP_OK
-    ) {
-        ESP_LOGE(
-            TAG,
-            "Failed to queue response: %s",
-            esp_err_to_name(
-                send_result
-            )
-        );
-    }
-
-    cJSON_free(
-        response_text
-    );
-
-    cJSON_Delete(
-        response
-    );
 }
 
 // ------------------------------------------------------------
@@ -1123,7 +950,7 @@ static void process_json_packet(
                 "JSON packet contains an invalid value"
             );
 
-            send_response(
+            singlecan_response_send(
                 packet_id,
                 "error",
                 command,
@@ -1151,7 +978,7 @@ static void process_json_packet(
         is_module_config &&
         value == NULL
     ) {
-        send_response(
+        singlecan_response_send(
             packet_id,
             "error",
             command,
@@ -1169,7 +996,7 @@ static void process_json_packet(
         !is_module_config &&
         value != NULL
     ) {
-        send_response(
+        singlecan_response_send(
             packet_id,
             "error",
             command,
@@ -1200,7 +1027,7 @@ static void process_json_packet(
             "Duplicate, replayed, or out-of-order request ID rejected"
         );
 
-        send_response(
+        singlecan_response_send(
             packet_id,
             "error",
             command,
@@ -1237,7 +1064,7 @@ static void process_json_packet(
                 value
             )
         ) {
-            send_response(
+            singlecan_response_send(
                 packet_id,
                 "ok",
                 command,
@@ -1253,7 +1080,7 @@ static void process_json_packet(
                     ? "dual_module_not_supported"
                     : "invalid_module";
 
-            send_response(
+            singlecan_response_send(
                 packet_id,
                 "error",
                 command,
@@ -1274,7 +1101,7 @@ static void process_json_packet(
             "Vehicle command rejected before configuration"
         );
 
-        send_response(
+        singlecan_response_send(
             packet_id,
             "error",
             command,
@@ -1297,14 +1124,14 @@ static void process_json_packet(
         command_result ==
         COMMAND_RESULT_NOT_IMPLEMENTED
     ) {
-        send_response(
+        singlecan_response_send(
             packet_id,
             "unsupported",
             command,
             "not_implemented"
         );
     } else {
-        send_response(
+        singlecan_response_send(
             packet_id,
             "unsupported",
             command,
