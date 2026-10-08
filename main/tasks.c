@@ -44,7 +44,7 @@ static volatile bool s_bus_recovery_active =
     false;
 
 // ------------------------------------------------------------
-// LOG CURRENT TWAI STATUS
+// LOG CURRENT TWAI HEALTH STATUS
 // ------------------------------------------------------------
 
 static void log_twai_status(
@@ -74,9 +74,15 @@ static void log_twai_status(
         return;
     }
 
+    /*
+     * These are controller-health counters only.
+     *
+     * No raw CAN identifiers, DLC values, or payload bytes are
+     * included in this diagnostic output.
+     */
     ESP_LOGI(
         TAG_TASKS,
-        "TWAI status during %s: "
+        "TWAI health during %s: "
         "state=%d "
         "tx_pending=%" PRIu32 " "
         "rx_pending=%" PRIu32 " "
@@ -160,9 +166,9 @@ static void complete_bus_recovery(void)
     );
 
     /*
-     * After bus recovery completes, the legacy TWAI driver is in
-     * the stopped state. Restart the driver before reception or any
-     * future verified transmission resumes.
+     * After recovery completes, the legacy TWAI driver remains in
+     * the stopped state. Restart it before reception or any future
+     * verified transmission resumes.
      */
     const esp_err_t start_result =
         twai_start();
@@ -181,6 +187,10 @@ static void complete_bus_recovery(void)
 
         singlecan_leds_error();
 
+        /*
+         * Leave recovery marked active. The RX drain task must not
+         * treat a stopped controller as healthy.
+         */
         return;
     }
 
@@ -198,7 +208,7 @@ static void complete_bus_recovery(void)
 }
 
 // ------------------------------------------------------------
-// PROCESS TWAI ALERTS
+// PROCESS TWAI HEALTH ALERTS
 // ------------------------------------------------------------
 
 static void process_twai_alerts(
@@ -402,10 +412,10 @@ static void can_health_task(
 }
 
 // ------------------------------------------------------------
-// CAN RX FORWARD TASK
+// SILENT TWAI RECEIVE-DRAIN TASK
 // ------------------------------------------------------------
 
-static void can_rx_forward_task(
+static void can_rx_drain_task(
     void *argument
 )
 {
@@ -413,7 +423,7 @@ static void can_rx_forward_task(
 
     ESP_LOGI(
         TAG_TASKS,
-        "CAN RX forward task started"
+        "TWAI receive-drain task started"
     );
 
     twai_message_t message;
@@ -449,7 +459,7 @@ static void can_rx_forward_task(
 
         if (
             receive_result ==
-            ESP_ERR_INVALID_STATE &&
+                ESP_ERR_INVALID_STATE &&
             s_bus_recovery_active
         ) {
             vTaskDelay(
@@ -467,7 +477,7 @@ static void can_rx_forward_task(
         ) {
             ESP_LOGE(
                 TAG_TASKS,
-                "CAN receive error: %s",
+                "TWAI receive-drain error: %s",
                 esp_err_to_name(
                     receive_result
                 )
@@ -483,42 +493,30 @@ static void can_rx_forward_task(
         }
 
         /*
-         * singlecan_receive() already forwards the received record
-         * through the outbound Bluetooth queue.
+         * The frame has been removed from the TWAI receive queue.
          *
-         * Log metadata only. Do not print bytes beyond the frame's
-         * reported DLC.
+         * PCAN hardware and PCAN-Explorer 7 own vehicle-bus capture
+         * and decoding. SingleCAN does not log, serialize, queue, or
+         * transmit this raw received frame over Bluetooth.
          */
-        ESP_LOGI(
-            TAG_TASKS,
-            "CAN frame received: "
-            "id=%" PRIu32 " "
-            "dlc=%u "
-            "extended=%u "
-            "remote=%u",
-            message.identifier,
-            message.data_length_code,
-            message.extd,
-            message.rtr
-        );
     }
 }
 
 // ------------------------------------------------------------
-// START CAN TASKS
+// START TWAI TASKS
 // ------------------------------------------------------------
 
 void start_can_rx_task(void)
 {
     if (
         s_can_rx_task_handle !=
-        NULL ||
+            NULL ||
         s_can_health_task_handle !=
-        NULL
+            NULL
     ) {
         ESP_LOGW(
             TAG_TASKS,
-            "CAN tasks are already running"
+            "TWAI tasks are already running"
         );
 
         return;
@@ -553,8 +551,8 @@ void start_can_rx_task(void)
 
     const BaseType_t receive_task_result =
         xTaskCreate(
-            can_rx_forward_task,
-            "can_rx_forward",
+            can_rx_drain_task,
+            "can_rx_drain",
             CAN_RX_TASK_STACK_SIZE,
             NULL,
             CAN_RX_TASK_PRIORITY,
@@ -567,7 +565,7 @@ void start_can_rx_task(void)
     ) {
         ESP_LOGE(
             TAG_TASKS,
-            "CAN RX task creation failed"
+            "TWAI receive-drain task creation failed"
         );
 
         if (
@@ -592,6 +590,6 @@ void start_can_rx_task(void)
 
     ESP_LOGI(
         TAG_TASKS,
-        "CAN RX and health-monitor tasks started"
+        "TWAI receive-drain and health-monitor tasks started"
     );
 }

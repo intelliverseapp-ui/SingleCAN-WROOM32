@@ -1,15 +1,24 @@
 #ifndef TASKS_H
 #define TASKS_H
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// Start the CAN RX forward task.
-// This task receives CAN frames and logs them.
+/**
+ * Starts the TWAI receive-drain task and TWAI health-monitor task.
+ *
+ * The receive-drain task prevents the TWAI receive queue from
+ * filling, but does not log, serialize, queue, or forward raw CAN
+ * frames. PCAN hardware and PCAN-Explorer 7 remain responsible for
+ * vehicle CAN capture and decoding.
+ *
+ * The health-monitor task handles TWAI alerts and bus-off recovery.
+ */
 void start_can_rx_task(void);
 
-// Start the TCP server task.
-// This task handles incoming TCP clients and commands.
-void start_tcp_server_task(void);
+#ifdef __cplusplus
+}
+#endif
 
-#endif // TASKS_H
+#endif
