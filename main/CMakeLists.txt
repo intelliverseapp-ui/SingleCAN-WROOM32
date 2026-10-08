@@ -4,7 +4,6 @@ idf_component_register(
         "tasks.c"
         "singlecan_can.c"
         "singlecan_commands.c"
-        "tcp_queue.c"
         "singlecan_leds.c"
         "bt_spp.c"
 
@@ -15,7 +14,6 @@ idf_component_register(
         driver
         nvs_flash
         freertos
-        lwip
         bt
         json
 )
