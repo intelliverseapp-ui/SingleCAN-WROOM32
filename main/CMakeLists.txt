@@ -7,6 +7,7 @@ idf_component_register(
         "singlecan_leds.c"
         "bt_spp.c"
         "bt_spp_framer.c"
+        "bt_spp_writer.c"
 
     INCLUDE_DIRS
         "."
