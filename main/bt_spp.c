@@ -12,10 +12,11 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "freertos/queue.h"
-#include "freertos/task.h"
 
 #include "bt_spp.h"
+#include "bt_spp_framer.h"
+#include "bt_spp_session.h"
+#include "bt_spp_writer.h"
 #include "singlecan_commands.h"
 
 static const char *TAG =
@@ -24,63 +25,14 @@ static const char *TAG =
 static const char *BT_DEVICE_NAME =
     "BabyNodeCAN";
 
-#define BT_SPP_TX_BUFFER_SIZE 256
-#define BT_SPP_TX_QUEUE_LENGTH 32
-
-#define BT_SPP_MAX_FRAME_LENGTH 4096
-
-#define BT_SPP_RX_BUFFER_SIZE \
-    (BT_SPP_MAX_FRAME_LENGTH + 1)
-
-#define BT_SPP_WRITER_STACK_SIZE 4096
-#define BT_SPP_WRITER_PRIORITY 6
-
-#define BT_SPP_WRITE_TIMEOUT_MS 5000
-
-#define BT_SPP_WRITER_EVENT_CONNECTED BIT0
-#define BT_SPP_WRITER_EVENT_WRITABLE BIT1
-#define BT_SPP_WRITER_EVENT_WRITE_COMPLETE BIT2
-#define BT_SPP_WRITER_EVENT_WRITE_FAILED BIT3
-
 #define BT_SPP_READINESS_EVENT_READY BIT0
 #define BT_SPP_READINESS_EVENT_FAILED BIT1
-
-typedef struct {
-    char message[
-        BT_SPP_TX_BUFFER_SIZE
-    ];
-
-    size_t length;
-
-    uint32_t session_id;
-} bt_spp_outbound_item_t;
-
-static QueueHandle_t s_outbound_queue =
-    NULL;
-
-static EventGroupHandle_t s_writer_events =
-    NULL;
 
 static EventGroupHandle_t s_readiness_events =
     NULL;
 
-static TaskHandle_t s_writer_task_handle =
-    NULL;
-
 static portMUX_TYPE s_state_lock =
     portMUX_INITIALIZER_UNLOCKED;
-
-static volatile uint32_t s_spp_handle =
-    0;
-
-static volatile uint32_t s_session_id =
-    0;
-
-static volatile int s_spp_connected =
-    0;
-
-static volatile int s_spp_congested =
-    0;
 
 static volatile int s_spp_server_ready =
     0;
@@ -88,70 +40,36 @@ static volatile int s_spp_server_ready =
 static volatile esp_err_t s_spp_startup_error =
     ESP_ERR_INVALID_STATE;
 
-static volatile int s_write_in_progress =
-    0;
+// ------------------------------------------------------------
+// COMPLETED-FRAME DELIVERY
+// ------------------------------------------------------------
 
-static volatile uint32_t s_inflight_handle =
-    0;
+static void bt_spp_handle_complete_frame(
+    const char *frame
+)
+{
+    if (frame == NULL) {
+        ESP_LOGE(
+            TAG,
+            "SPP framer delivered a null frame"
+        );
 
-static volatile uint32_t s_inflight_session_id =
-    0;
+        return;
+    }
 
-static char s_rx_buffer[
-    BT_SPP_RX_BUFFER_SIZE
-];
-
-static size_t s_rx_length =
-    0;
-
-static int s_rx_discard_until_newline =
-    0;
-
-static int s_rx_pending_carriage_return =
-    0;
+    singlecan_commands_process(
+        frame
+    );
+}
 
 // ------------------------------------------------------------
 // FORWARD DECLARATIONS
 // ------------------------------------------------------------
 
-static void bt_spp_writer_task(
-    void *task_argument
-);
-
 static void spp_event_handler(
     esp_spp_cb_event_t event,
     esp_spp_cb_param_t *param
 );
-
-// ------------------------------------------------------------
-// SESSION GENERATION
-// ------------------------------------------------------------
-
-static uint32_t bt_spp_next_session_id(void)
-{
-    uint32_t next_session_id;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    s_session_id +=
-        1;
-
-    if (s_session_id == 0) {
-        s_session_id =
-            1;
-    }
-
-    next_session_id =
-        s_session_id;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    return next_session_id;
-}
 
 // ------------------------------------------------------------
 // SERVER READINESS
@@ -299,649 +217,84 @@ static esp_err_t bt_spp_create_readiness_events(void)
 }
 
 // ------------------------------------------------------------
-// RECEIVE FRAMING
+// EXTRACTED SESSION AND WRITER BRIDGE
 // ------------------------------------------------------------
 
-static void bt_spp_reset_receive_state(void)
-{
-    memset(
-        s_rx_buffer,
-        0,
-        sizeof(s_rx_buffer)
-    );
-
-    s_rx_length =
-        0;
-
-    s_rx_discard_until_newline =
-        0;
-
-    s_rx_pending_carriage_return =
-        0;
-}
-
-static int bt_spp_is_allowed_input_byte(
-    uint8_t byte
+static void bt_spp_disconnect_writer_session(
+    uint32_t handle,
+    uint32_t session_id
 )
 {
     if (
-        byte == '\n' ||
-        byte == '\r'
-    ) {
-        return 1;
-    }
-
-    if (
-        byte >= 0x20 &&
-        byte <= 0x7E
-    ) {
-        return 1;
-    }
-
-    return 0;
-}
-
-static void bt_spp_discard_current_frame(
-    const char *reason
-)
-{
-    ESP_LOGW(
-        TAG,
-        "Discarding invalid SPP frame: %s",
-        reason
-    );
-
-    memset(
-        s_rx_buffer,
-        0,
-        sizeof(s_rx_buffer)
-    );
-
-    s_rx_length =
-        0;
-
-    s_rx_pending_carriage_return =
-        0;
-
-    s_rx_discard_until_newline =
-        1;
-}
-
-static void bt_spp_process_complete_frame(void)
-{
-    if (s_rx_length == 0) {
-        return;
-    }
-
-    s_rx_buffer[
-        s_rx_length
-    ] = '\0';
-
-    ESP_LOGI(
-        TAG,
-        "Complete SPP frame received, len=%zu",
-        s_rx_length
-    );
-
-    singlecan_commands_process(
-        s_rx_buffer
-    );
-
-    memset(
-        s_rx_buffer,
-        0,
-        sizeof(s_rx_buffer)
-    );
-
-    s_rx_length =
-        0;
-}
-
-static void bt_spp_process_received_bytes(
-    const uint8_t *data,
-    size_t data_length
-)
-{
-    if (
-        data == NULL ||
-        data_length == 0
+        !bt_spp_session_matches(
+            handle,
+            session_id
+        )
     ) {
         ESP_LOGW(
             TAG,
-            "SPP data event contained no data"
+            "Ignoring stale writer disconnect request"
         );
 
         return;
     }
 
-    for (
-        size_t index = 0;
-        index < data_length;
-        ++index
+    const esp_err_t disconnect_result =
+        esp_spp_disconnect(
+            handle
+        );
+
+    if (
+        disconnect_result !=
+        ESP_OK
     ) {
-        const uint8_t byte =
-            data[index];
-
-        if (s_rx_discard_until_newline) {
-            if (byte == '\n') {
-                s_rx_discard_until_newline =
-                    0;
-
-                s_rx_length =
-                    0;
-
-                s_rx_pending_carriage_return =
-                    0;
-
-                memset(
-                    s_rx_buffer,
-                    0,
-                    sizeof(s_rx_buffer)
-                );
-
-                ESP_LOGI(
-                    TAG,
-                    "SPP frame discard completed at newline"
-                );
-            }
-
-            continue;
-        }
+        ESP_LOGE(
+            TAG,
+            "Failed to disconnect timed-out SPP session: %s",
+            esp_err_to_name(
+                disconnect_result
+            )
+        );
 
         /*
-         * Carriage return is accepted only when followed by LF.
-         * The pending state survives fragmented Bluetooth callbacks.
+         * The Bluetooth stack could not complete the requested
+         * disconnect. Invalidate local ownership so no further work
+         * can be submitted to the failed session.
          */
-        if (s_rx_pending_carriage_return) {
-            s_rx_pending_carriage_return =
-                0;
-
-            if (byte == '\n') {
-                bt_spp_process_complete_frame();
-
-                continue;
-            }
-
-            bt_spp_discard_current_frame(
-                "carriage return outside CRLF terminator"
-            );
-
-            continue;
-        }
-
         if (
-            !bt_spp_is_allowed_input_byte(
-                byte
+            bt_spp_session_matches(
+                handle,
+                session_id
             )
         ) {
-            bt_spp_discard_current_frame(
-                "binary or control byte detected"
-            );
+            bt_spp_session_force_close();
 
-            continue;
+            singlecan_commands_reset_session();
+
+            bt_spp_framer_reset();
+
+            bt_spp_writer_on_disconnected();
         }
-
-        if (byte == '\r') {
-            s_rx_pending_carriage_return =
-                1;
-
-            continue;
-        }
-
-        if (byte == '\n') {
-            bt_spp_process_complete_frame();
-
-            continue;
-        }
-
-        if (
-            s_rx_length >=
-            BT_SPP_MAX_FRAME_LENGTH
-        ) {
-            bt_spp_discard_current_frame(
-                "maximum frame length exceeded"
-            );
-
-            continue;
-        }
-
-        s_rx_buffer[
-            s_rx_length
-        ] = (char)byte;
-
-        s_rx_length +=
-            1;
     }
 }
 
-// ------------------------------------------------------------
-// END OF CHUNK 1
-// Paste Chunk 2 immediately below this line.
-// ------------------------------------------------------------
-// ------------------------------------------------------------
-// WRITER-STATE HELPERS
-// ------------------------------------------------------------
-
-static void bt_spp_reset_outbound_queue(void)
+static void bt_spp_complete_active_session_close(
+    uint32_t handle
+)
 {
     if (
-        s_outbound_queue !=
-        NULL
-    ) {
-        xQueueReset(
-            s_outbound_queue
-        );
-    }
-}
-
-static void bt_spp_signal_write_failure(void)
-{
-    if (
-        s_writer_events !=
-        NULL
-    ) {
-        xEventGroupSetBits(
-            s_writer_events,
-            BT_SPP_WRITER_EVENT_WRITE_FAILED
-        );
-    }
-}
-
-static void bt_spp_update_writer_availability(void)
-{
-    uint32_t active_handle;
-    int connected;
-    int congested;
-    int write_in_progress;
-    int server_ready;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    active_handle =
-        s_spp_handle;
-
-    connected =
-        s_spp_connected;
-
-    congested =
-        s_spp_congested;
-
-    write_in_progress =
-        s_write_in_progress;
-
-    server_ready =
-        s_spp_server_ready;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    if (
-        s_writer_events ==
-        NULL
+        !bt_spp_session_close(
+            handle
+        )
     ) {
         return;
     }
-
-    if (
-        server_ready &&
-        connected &&
-        active_handle != 0 &&
-        !congested &&
-        !write_in_progress
-    ) {
-        xEventGroupSetBits(
-            s_writer_events,
-            BT_SPP_WRITER_EVENT_CONNECTED |
-                BT_SPP_WRITER_EVENT_WRITABLE
-        );
-    } else {
-        xEventGroupClearBits(
-            s_writer_events,
-            BT_SPP_WRITER_EVENT_WRITABLE
-        );
-
-        if (!connected) {
-            xEventGroupClearBits(
-                s_writer_events,
-                BT_SPP_WRITER_EVENT_CONNECTED
-            );
-        }
-    }
-}
-
-static void bt_spp_clear_inflight_write(
-    uint32_t expected_handle,
-    uint32_t expected_session_id
-)
-{
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    if (
-        s_write_in_progress &&
-        s_inflight_handle ==
-            expected_handle &&
-        s_inflight_session_id ==
-            expected_session_id
-    ) {
-        s_write_in_progress =
-            0;
-
-        s_inflight_handle =
-            0;
-
-        s_inflight_session_id =
-            0;
-    }
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-}
-
-static void bt_spp_cancel_active_session(void)
-{
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    s_spp_connected =
-        0;
-
-    s_spp_handle =
-        0;
-
-    s_spp_congested =
-        0;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    bt_spp_next_session_id();
 
     singlecan_commands_reset_session();
 
-    bt_spp_reset_receive_state();
+    bt_spp_framer_reset();
 
-    bt_spp_reset_outbound_queue();
-
-    if (
-        s_writer_events !=
-        NULL
-    ) {
-        xEventGroupClearBits(
-            s_writer_events,
-            BT_SPP_WRITER_EVENT_CONNECTED |
-                BT_SPP_WRITER_EVENT_WRITABLE
-        );
-    }
-
-    /*
-     * Do not clear this failure signal during a new connection.
-     * A writer waiting on the old session must consume it.
-     */
-    bt_spp_signal_write_failure();
-}
-
-// ------------------------------------------------------------
-// SINGLE COMPLETION-DRIVEN SPP WRITER
-// ------------------------------------------------------------
-
-static void bt_spp_writer_task(
-    void *task_argument
-)
-{
-    (void)task_argument;
-
-    bt_spp_outbound_item_t item;
-
-    memset(
-        &item,
-        0,
-        sizeof(item)
-    );
-
-    ESP_LOGI(
-        TAG,
-        "Completion-driven SPP writer task started"
-    );
-
-    while (true) {
-        if (
-            xQueueReceive(
-                s_outbound_queue,
-                &item,
-                portMAX_DELAY
-            ) !=
-            pdTRUE
-        ) {
-            ESP_LOGE(
-                TAG,
-                "SPP writer failed to receive queued message"
-            );
-
-            continue;
-        }
-
-        xEventGroupWaitBits(
-            s_writer_events,
-            BT_SPP_WRITER_EVENT_CONNECTED |
-                BT_SPP_WRITER_EVENT_WRITABLE,
-            pdFALSE,
-            pdTRUE,
-            portMAX_DELAY
-        );
-
-        uint32_t write_handle;
-        uint32_t write_session_id;
-        int connection_valid;
-
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        write_handle =
-            s_spp_handle;
-
-        write_session_id =
-            s_session_id;
-
-        connection_valid =
-            s_spp_server_ready &&
-            s_spp_connected &&
-            write_handle != 0 &&
-            !s_spp_congested &&
-            !s_write_in_progress &&
-            item.session_id ==
-                write_session_id;
-
-        if (connection_valid) {
-            s_write_in_progress =
-                1;
-
-            s_inflight_handle =
-                write_handle;
-
-            s_inflight_session_id =
-                write_session_id;
-        }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
-        if (!connection_valid) {
-            ESP_LOGW(
-                TAG,
-                "Queued message discarded because session changed"
-            );
-
-            memset(
-                &item,
-                0,
-                sizeof(item)
-            );
-
-            bt_spp_update_writer_availability();
-
-            continue;
-        }
-
-        /*
-         * Clear completion state only after ownership of this
-         * exact write has been recorded.
-         */
-        xEventGroupClearBits(
-            s_writer_events,
-            BT_SPP_WRITER_EVENT_WRITABLE |
-                BT_SPP_WRITER_EVENT_WRITE_COMPLETE |
-                BT_SPP_WRITER_EVENT_WRITE_FAILED
-        );
-
-        ESP_LOGI(
-            TAG,
-            "Submitting serialized SPP write, len=%zu, "
-            "session=%" PRIu32,
-            item.length,
-            write_session_id
-        );
-
-        const esp_err_t write_result =
-            esp_spp_write(
-                write_handle,
-                (int)item.length,
-                (uint8_t *)item.message
-            );
-
-        if (
-            write_result !=
-            ESP_OK
-        ) {
-            ESP_LOGE(
-                TAG,
-                "esp_spp_write rejected request: %s",
-                esp_err_to_name(
-                    write_result
-                )
-            );
-
-            bt_spp_clear_inflight_write(
-                write_handle,
-                write_session_id
-            );
-
-            bt_spp_update_writer_availability();
-
-            memset(
-                &item,
-                0,
-                sizeof(item)
-            );
-
-            continue;
-        }
-
-        const EventBits_t completion_bits =
-            xEventGroupWaitBits(
-                s_writer_events,
-                BT_SPP_WRITER_EVENT_WRITE_COMPLETE |
-                    BT_SPP_WRITER_EVENT_WRITE_FAILED,
-                pdTRUE,
-                pdFALSE,
-                pdMS_TO_TICKS(
-                    BT_SPP_WRITE_TIMEOUT_MS
-                )
-            );
-
-        if (
-            completion_bits &
-            BT_SPP_WRITER_EVENT_WRITE_COMPLETE
-        ) {
-            ESP_LOGI(
-                TAG,
-                "Serialized SPP write completed"
-            );
-        } else if (
-            completion_bits &
-            BT_SPP_WRITER_EVENT_WRITE_FAILED
-        ) {
-            ESP_LOGE(
-                TAG,
-                "Serialized SPP write failed or session closed"
-            );
-        } else {
-            ESP_LOGE(
-                TAG,
-                "Serialized SPP write timed out"
-            );
-
-            uint32_t active_handle;
-            uint32_t active_session_id;
-            int same_active_session;
-
-            portENTER_CRITICAL(
-                &s_state_lock
-            );
-
-            active_handle =
-                s_spp_handle;
-
-            active_session_id =
-                s_session_id;
-
-            same_active_session =
-                s_spp_connected &&
-                active_handle ==
-                    write_handle &&
-                active_session_id ==
-                    write_session_id;
-
-            portEXIT_CRITICAL(
-                &s_state_lock
-            );
-
-            if (same_active_session) {
-                const esp_err_t disconnect_result =
-                    esp_spp_disconnect(
-                        write_handle
-                    );
-
-                if (
-                    disconnect_result !=
-                    ESP_OK
-                ) {
-                    ESP_LOGE(
-                        TAG,
-                        "Failed to disconnect timed-out "
-                        "SPP session: %s",
-                        esp_err_to_name(
-                            disconnect_result
-                        )
-                    );
-
-                    bt_spp_cancel_active_session();
-                }
-            }
-        }
-
-        bt_spp_clear_inflight_write(
-            write_handle,
-            write_session_id
-        );
-
-        bt_spp_update_writer_availability();
-
-        memset(
-            &item,
-            0,
-            sizeof(item)
-        );
-    }
+    bt_spp_writer_on_disconnected();
 }
 
 // ------------------------------------------------------------
@@ -1040,42 +393,16 @@ esp_err_t bt_spp_wait_until_ready(
 
 int bt_spp_is_connected(void)
 {
-    int connected;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    connected =
-        s_spp_connected;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    return connected;
+    return bt_spp_session_is_connected();
 }
 
 uint32_t bt_spp_get_handle(void)
 {
-    uint32_t handle;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    handle =
-        s_spp_handle;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    return handle;
+    return bt_spp_session_get_handle();
 }
 
 // ------------------------------------------------------------
-// QUEUE DATA FOR THE SINGLE SPP WRITER
+// QUEUE DATA FOR THE EXTRACTED SPP WRITER
 // ------------------------------------------------------------
 
 esp_err_t bt_spp_send(
@@ -1083,69 +410,10 @@ esp_err_t bt_spp_send(
 )
 {
     if (
-        message == NULL ||
-        message[0] == '\0'
+        !bt_spp_is_server_ready() ||
+        !bt_spp_session_is_connected() ||
+        bt_spp_session_get_handle() == 0
     ) {
-        ESP_LOGE(
-            TAG,
-            "Cannot queue a null or empty SPP message"
-        );
-
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (
-        s_outbound_queue == NULL ||
-        s_writer_events == NULL ||
-        s_writer_task_handle == NULL
-    ) {
-        ESP_LOGE(
-            TAG,
-            "SPP writer is not initialized"
-        );
-
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const size_t message_length =
-        strlen(
-            message
-        );
-
-    if (
-        message_length + 2 >
-        BT_SPP_TX_BUFFER_SIZE
-    ) {
-        ESP_LOGE(
-            TAG,
-            "SPP message too large: %zu bytes, maximum=%d",
-            message_length,
-            BT_SPP_TX_BUFFER_SIZE - 2
-        );
-
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    uint32_t current_session_id;
-    int session_available;
-
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
-
-    current_session_id =
-        s_session_id;
-
-    session_available =
-        s_spp_server_ready &&
-        s_spp_connected &&
-        s_spp_handle != 0;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
-
-    if (!session_available) {
         ESP_LOGW(
             TAG,
             "Cannot queue SPP message: no active session"
@@ -1154,64 +422,12 @@ esp_err_t bt_spp_send(
         return ESP_ERR_INVALID_STATE;
     }
 
-    bt_spp_outbound_item_t item;
-
-    memset(
-        &item,
-        0,
-        sizeof(item)
-    );
-
-    memcpy(
-        item.message,
+    return bt_spp_writer_send(
         message,
-        message_length
+        bt_spp_session_get_id()
     );
-
-    item.message[
-        message_length
-    ] = '\n';
-
-    item.message[
-        message_length + 1
-    ] = '\0';
-
-    item.length =
-        message_length + 1;
-
-    item.session_id =
-        current_session_id;
-
-    if (
-        xQueueSend(
-            s_outbound_queue,
-            &item,
-            0
-        ) !=
-        pdTRUE
-    ) {
-        ESP_LOGE(
-            TAG,
-            "SPP outbound queue is full"
-        );
-
-        return ESP_ERR_NO_MEM;
-    }
-
-    ESP_LOGD(
-        TAG,
-        "SPP message queued, len=%zu, session=%" PRIu32,
-        item.length,
-        item.session_id
-    );
-
-    return ESP_OK;
 }
 
-// ------------------------------------------------------------
-// END OF CHUNK 2
-// Paste Chunk 3 immediately below this line.
-// ------------------------------------------------------------
 // ------------------------------------------------------------
 // SPP EVENT HANDLER
 // ------------------------------------------------------------
@@ -1352,54 +568,22 @@ static void spp_event_handler(
         const uint32_t new_handle =
             param->srv_open.handle;
 
-        int reject_connection =
-            0;
-
         uint32_t accepted_session_id =
             0;
 
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
+        const int connection_is_valid =
+            bt_spp_is_server_ready() &&
+            param->srv_open.status ==
+                ESP_SPP_SUCCESS;
 
-        if (
-            !s_spp_server_ready ||
-            param->srv_open.status !=
-                ESP_SPP_SUCCESS ||
-            (
-                s_spp_connected &&
-                s_spp_handle != 0
-            )
-        ) {
-            reject_connection =
-                1;
-        } else {
-            s_spp_connected =
-                1;
+        const int connection_accepted =
+            connection_is_valid &&
+            bt_spp_session_accept(
+                new_handle,
+                &accepted_session_id
+            );
 
-            s_spp_handle =
-                new_handle;
-
-            s_spp_congested =
-                0;
-
-            s_session_id +=
-                1;
-
-            if (s_session_id == 0) {
-                s_session_id =
-                    1;
-            }
-
-            accepted_session_id =
-                s_session_id;
-        }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
-        if (reject_connection) {
+        if (!connection_accepted) {
             ESP_LOGW(
                 TAG,
                 "Rejecting additional or invalid SPP client, "
@@ -1412,7 +596,10 @@ static void spp_event_handler(
                     new_handle
                 );
 
-            if (disconnect_result != ESP_OK) {
+            if (
+                disconnect_result !=
+                ESP_OK
+            ) {
                 ESP_LOGE(
                     TAG,
                     "Failed to disconnect rejected SPP client: %s",
@@ -1427,23 +614,9 @@ static void spp_event_handler(
 
         singlecan_commands_reset_session();
 
-        bt_spp_reset_receive_state();
+        bt_spp_framer_reset();
 
-        bt_spp_reset_outbound_queue();
-
-        /*
-         * Do not clear WRITE_FAILED here. A writer associated with
-         * the previous session may still need to consume the
-         * cancellation signal.
-         */
-        if (s_writer_events != NULL) {
-            xEventGroupSetBits(
-                s_writer_events,
-                BT_SPP_WRITER_EVENT_CONNECTED
-            );
-        }
-
-        bt_spp_update_writer_availability();
+        bt_spp_writer_on_connected();
 
         ESP_LOGI(
             TAG,
@@ -1460,22 +633,10 @@ static void spp_event_handler(
         const uint32_t closed_handle =
             param->close.handle;
 
-        uint32_t active_handle;
-
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        active_handle =
-            s_spp_handle;
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
         if (
-            closed_handle !=
-            active_handle
+            !bt_spp_session_handle_is_active(
+                closed_handle
+            )
         ) {
             ESP_LOGI(
                 TAG,
@@ -1493,30 +654,21 @@ static void spp_event_handler(
             closed_handle
         );
 
-        bt_spp_cancel_active_session();
+        bt_spp_complete_active_session_close(
+            closed_handle
+        );
 
         break;
     }
 
     case ESP_SPP_DATA_IND_EVT: {
-        uint32_t active_handle;
-        int active_session;
+        const uint32_t active_handle =
+            bt_spp_session_get_handle();
 
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        active_handle =
-            s_spp_handle;
-
-        active_session =
-            s_spp_server_ready &&
-            s_spp_connected &&
+        const int active_session =
+            bt_spp_is_server_ready() &&
+            bt_spp_session_is_connected() &&
             active_handle != 0;
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
 
         if (
             !active_session ||
@@ -1541,7 +693,7 @@ static void spp_event_handler(
             param->data_ind.len
         );
 
-        bt_spp_process_received_bytes(
+        bt_spp_framer_process(
             param->data_ind.data,
             (size_t)param->data_ind.len
         );
@@ -1550,30 +702,13 @@ static void spp_event_handler(
     }
 
     case ESP_SPP_CONG_EVT: {
-        uint32_t active_handle;
-        int event_matches_active_handle;
-
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
-        active_handle =
-            s_spp_handle;
-
-        event_matches_active_handle =
-            param->cong.handle ==
-            active_handle;
-
-        if (event_matches_active_handle) {
-            s_spp_congested =
+        const int event_matches_active_handle =
+            bt_spp_session_set_congested(
+                param->cong.handle,
                 param->cong.cong
                     ? 1
-                    : 0;
-        }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
+                    : 0
+            );
 
         if (!event_matches_active_handle) {
             ESP_LOGW(
@@ -1592,94 +727,24 @@ static void spp_event_handler(
                 : 0
         );
 
-        bt_spp_update_writer_availability();
+        bt_spp_writer_on_congestion_changed();
 
         break;
     }
 
-    case ESP_SPP_WRITE_EVT: {
-        int matches_inflight =
-            0;
-
-        uint32_t inflight_session_id =
-            0;
-
-        portENTER_CRITICAL(
-            &s_state_lock
-        );
-
+    case ESP_SPP_WRITE_EVT:
         if (
-            s_write_in_progress &&
-            param->write.handle ==
-                s_inflight_handle
+            !bt_spp_writer_on_write_event(
+                param
+            )
         ) {
-            matches_inflight =
-                1;
-
-            inflight_session_id =
-                s_inflight_session_id;
-
-            if (
-                s_spp_connected &&
-                s_spp_handle ==
-                    param->write.handle &&
-                s_session_id ==
-                    inflight_session_id
-            ) {
-                s_spp_congested =
-                    param->write.cong
-                        ? 1
-                        : 0;
-            }
-        }
-
-        portEXIT_CRITICAL(
-            &s_state_lock
-        );
-
-        if (!matches_inflight) {
             ESP_LOGW(
                 TAG,
-                "Ignoring late or unrelated SPP write event, "
-                "handle=%" PRIu32,
-                param->write.handle
+                "SPP write event did not match active writer state"
             );
-
-            break;
-        }
-
-        if (
-            param->write.status ==
-            ESP_SPP_SUCCESS
-        ) {
-            ESP_LOGI(
-                TAG,
-                "SPP write completed, len=%d, "
-                "session=%" PRIu32,
-                param->write.len,
-                inflight_session_id
-            );
-
-            if (s_writer_events != NULL) {
-                xEventGroupSetBits(
-                    s_writer_events,
-                    BT_SPP_WRITER_EVENT_WRITE_COMPLETE
-                );
-            }
-        } else {
-            ESP_LOGE(
-                TAG,
-                "SPP write failed, status=%d, "
-                "session=%" PRIu32,
-                param->write.status,
-                inflight_session_id
-            );
-
-            bt_spp_signal_write_failure();
         }
 
         break;
-    }
 
     default:
         ESP_LOGD(
@@ -1693,148 +758,29 @@ static void spp_event_handler(
 }
 
 // ------------------------------------------------------------
-// WRITER CREATION
-// ------------------------------------------------------------
-
-static esp_err_t bt_spp_create_writer(void)
-{
-    if (
-        s_outbound_queue != NULL ||
-        s_writer_events != NULL ||
-        s_writer_task_handle != NULL
-    ) {
-        ESP_LOGW(
-            TAG,
-            "SPP writer pipeline is already initialized"
-        );
-
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    s_outbound_queue =
-        xQueueCreate(
-            BT_SPP_TX_QUEUE_LENGTH,
-            sizeof(
-                bt_spp_outbound_item_t
-            )
-        );
-
-    if (s_outbound_queue == NULL) {
-        ESP_LOGE(
-            TAG,
-            "Failed to create SPP outbound queue"
-        );
-
-        return ESP_ERR_NO_MEM;
-    }
-
-    s_writer_events =
-        xEventGroupCreate();
-
-    if (s_writer_events == NULL) {
-        ESP_LOGE(
-            TAG,
-            "Failed to create SPP writer event group"
-        );
-
-        vQueueDelete(
-            s_outbound_queue
-        );
-
-        s_outbound_queue =
-            NULL;
-
-        return ESP_ERR_NO_MEM;
-    }
-
-    const BaseType_t task_result =
-        xTaskCreate(
-            bt_spp_writer_task,
-            "bt_spp_writer",
-            BT_SPP_WRITER_STACK_SIZE,
-            NULL,
-            BT_SPP_WRITER_PRIORITY,
-            &s_writer_task_handle
-        );
-
-    if (task_result != pdPASS) {
-        ESP_LOGE(
-            TAG,
-            "Failed to start SPP writer task"
-        );
-
-        vEventGroupDelete(
-            s_writer_events
-        );
-
-        s_writer_events =
-            NULL;
-
-        vQueueDelete(
-            s_outbound_queue
-        );
-
-        s_outbound_queue =
-            NULL;
-
-        s_writer_task_handle =
-            NULL;
-
-        return ESP_ERR_NO_MEM;
-    }
-
-    ESP_LOGI(
-        TAG,
-        "Single completion-driven SPP writer ready"
-    );
-
-    return ESP_OK;
-}
-
-// ------------------------------------------------------------
 // BLUETOOTH INITIALIZATION
 // ------------------------------------------------------------
 
 esp_err_t bt_spp_init(void)
 {
-    bt_spp_reset_receive_state();
+    if (
+        !bt_spp_framer_init(
+            bt_spp_handle_complete_frame
+        )
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Failed to initialize SPP receive framer"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
 
     singlecan_commands_reset_session();
 
-    portENTER_CRITICAL(
-        &s_state_lock
-    );
+    bt_spp_session_init();
 
-    s_spp_handle =
-        0;
-
-    s_session_id =
-        0;
-
-    s_spp_connected =
-        0;
-
-    s_spp_congested =
-        0;
-
-    s_spp_server_ready =
-        0;
-
-    s_spp_startup_error =
-        ESP_ERR_INVALID_STATE;
-
-    s_write_in_progress =
-        0;
-
-    s_inflight_handle =
-        0;
-
-    s_inflight_session_id =
-        0;
-
-    portEXIT_CRITICAL(
-        &s_state_lock
-    );
+    bt_spp_reset_readiness_state();
 
     const esp_err_t readiness_result =
         bt_spp_create_readiness_events();
@@ -1844,9 +790,15 @@ esp_err_t bt_spp_init(void)
     }
 
     const esp_err_t writer_result =
-        bt_spp_create_writer();
+        bt_spp_writer_init(
+            bt_spp_session_get_writer_snapshot,
+            bt_spp_disconnect_writer_session
+        );
 
-    if (writer_result != ESP_OK) {
+    if (
+        writer_result !=
+        ESP_OK
+    ) {
         bt_spp_mark_server_failed(
             writer_result
         );

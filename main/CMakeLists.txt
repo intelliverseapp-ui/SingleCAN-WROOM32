@@ -6,6 +6,9 @@ idf_component_register(
         "singlecan_commands.c"
         "singlecan_leds.c"
         "bt_spp.c"
+        "bt_spp_framer.c"
+        "bt_spp_writer.c"
+        "bt_spp_session.c"
 
     INCLUDE_DIRS
         "."
