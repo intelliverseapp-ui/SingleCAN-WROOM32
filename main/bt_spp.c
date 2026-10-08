@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 
 #include "bt_spp.h"
+#include "bt_spp_framer.h"
 #include "singlecan_commands.h"
 
 static const char *TAG =
@@ -26,11 +27,6 @@ static const char *BT_DEVICE_NAME =
 
 #define BT_SPP_TX_BUFFER_SIZE 256
 #define BT_SPP_TX_QUEUE_LENGTH 32
-
-#define BT_SPP_MAX_FRAME_LENGTH 4096
-
-#define BT_SPP_RX_BUFFER_SIZE \
-    (BT_SPP_MAX_FRAME_LENGTH + 1)
 
 #define BT_SPP_WRITER_STACK_SIZE 4096
 #define BT_SPP_WRITER_PRIORITY 6
@@ -97,18 +93,27 @@ static volatile uint32_t s_inflight_handle =
 static volatile uint32_t s_inflight_session_id =
     0;
 
-static char s_rx_buffer[
-    BT_SPP_RX_BUFFER_SIZE
-];
+// ------------------------------------------------------------
+// COMPLETED-FRAME DELIVERY
+// ------------------------------------------------------------
 
-static size_t s_rx_length =
-    0;
+static void bt_spp_handle_complete_frame(
+    const char *frame
+)
+{
+    if (frame == NULL) {
+        ESP_LOGE(
+            TAG,
+            "SPP framer delivered a null frame"
+        );
 
-static int s_rx_discard_until_newline =
-    0;
+        return;
+    }
 
-static int s_rx_pending_carriage_return =
-    0;
+    singlecan_commands_process(
+        frame
+    );
+}
 
 // ------------------------------------------------------------
 // FORWARD DECLARATIONS
@@ -299,226 +304,6 @@ static esp_err_t bt_spp_create_readiness_events(void)
 }
 
 // ------------------------------------------------------------
-// RECEIVE FRAMING
-// ------------------------------------------------------------
-
-static void bt_spp_reset_receive_state(void)
-{
-    memset(
-        s_rx_buffer,
-        0,
-        sizeof(s_rx_buffer)
-    );
-
-    s_rx_length =
-        0;
-
-    s_rx_discard_until_newline =
-        0;
-
-    s_rx_pending_carriage_return =
-        0;
-}
-
-static int bt_spp_is_allowed_input_byte(
-    uint8_t byte
-)
-{
-    if (
-        byte == '\n' ||
-        byte == '\r'
-    ) {
-        return 1;
-    }
-
-    if (
-        byte >= 0x20 &&
-        byte <= 0x7E
-    ) {
-        return 1;
-    }
-
-    return 0;
-}
-
-static void bt_spp_discard_current_frame(
-    const char *reason
-)
-{
-    ESP_LOGW(
-        TAG,
-        "Discarding invalid SPP frame: %s",
-        reason
-    );
-
-    memset(
-        s_rx_buffer,
-        0,
-        sizeof(s_rx_buffer)
-    );
-
-    s_rx_length =
-        0;
-
-    s_rx_pending_carriage_return =
-        0;
-
-    s_rx_discard_until_newline =
-        1;
-}
-
-static void bt_spp_process_complete_frame(void)
-{
-    if (s_rx_length == 0) {
-        return;
-    }
-
-    s_rx_buffer[
-        s_rx_length
-    ] = '\0';
-
-    ESP_LOGI(
-        TAG,
-        "Complete SPP frame received, len=%zu",
-        s_rx_length
-    );
-
-    singlecan_commands_process(
-        s_rx_buffer
-    );
-
-    memset(
-        s_rx_buffer,
-        0,
-        sizeof(s_rx_buffer)
-    );
-
-    s_rx_length =
-        0;
-}
-
-static void bt_spp_process_received_bytes(
-    const uint8_t *data,
-    size_t data_length
-)
-{
-    if (
-        data == NULL ||
-        data_length == 0
-    ) {
-        ESP_LOGW(
-            TAG,
-            "SPP data event contained no data"
-        );
-
-        return;
-    }
-
-    for (
-        size_t index = 0;
-        index < data_length;
-        ++index
-    ) {
-        const uint8_t byte =
-            data[index];
-
-        if (s_rx_discard_until_newline) {
-            if (byte == '\n') {
-                s_rx_discard_until_newline =
-                    0;
-
-                s_rx_length =
-                    0;
-
-                s_rx_pending_carriage_return =
-                    0;
-
-                memset(
-                    s_rx_buffer,
-                    0,
-                    sizeof(s_rx_buffer)
-                );
-
-                ESP_LOGI(
-                    TAG,
-                    "SPP frame discard completed at newline"
-                );
-            }
-
-            continue;
-        }
-
-        /*
-         * Carriage return is accepted only when followed by LF.
-         * The pending state survives fragmented Bluetooth callbacks.
-         */
-        if (s_rx_pending_carriage_return) {
-            s_rx_pending_carriage_return =
-                0;
-
-            if (byte == '\n') {
-                bt_spp_process_complete_frame();
-
-                continue;
-            }
-
-            bt_spp_discard_current_frame(
-                "carriage return outside CRLF terminator"
-            );
-
-            continue;
-        }
-
-        if (
-            !bt_spp_is_allowed_input_byte(
-                byte
-            )
-        ) {
-            bt_spp_discard_current_frame(
-                "binary or control byte detected"
-            );
-
-            continue;
-        }
-
-        if (byte == '\r') {
-            s_rx_pending_carriage_return =
-                1;
-
-            continue;
-        }
-
-        if (byte == '\n') {
-            bt_spp_process_complete_frame();
-
-            continue;
-        }
-
-        if (
-            s_rx_length >=
-            BT_SPP_MAX_FRAME_LENGTH
-        ) {
-            bt_spp_discard_current_frame(
-                "maximum frame length exceeded"
-            );
-
-            continue;
-        }
-
-        s_rx_buffer[
-            s_rx_length
-        ] = (char)byte;
-
-        s_rx_length +=
-            1;
-    }
-}
-
-// ------------------------------------------------------------
-// END OF CHUNK 1
-// Paste Chunk 2 immediately below this line.
-// ------------------------------------------------------------
-// ------------------------------------------------------------
 // WRITER-STATE HELPERS
 // ------------------------------------------------------------
 
@@ -666,7 +451,7 @@ static void bt_spp_cancel_active_session(void)
 
     singlecan_commands_reset_session();
 
-    bt_spp_reset_receive_state();
+    bt_spp_framer_reset();
 
     bt_spp_reset_outbound_queue();
 
@@ -1427,7 +1212,7 @@ static void spp_event_handler(
 
         singlecan_commands_reset_session();
 
-        bt_spp_reset_receive_state();
+        bt_spp_framer_reset();
 
         bt_spp_reset_outbound_queue();
 
@@ -1541,7 +1326,7 @@ static void spp_event_handler(
             param->data_ind.len
         );
 
-        bt_spp_process_received_bytes(
+        bt_spp_framer_process(
             param->data_ind.data,
             (size_t)param->data_ind.len
         );
@@ -1797,7 +1582,18 @@ static esp_err_t bt_spp_create_writer(void)
 
 esp_err_t bt_spp_init(void)
 {
-    bt_spp_reset_receive_state();
+    if (
+        !bt_spp_framer_init(
+            bt_spp_handle_complete_frame
+        )
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Failed to initialize SPP receive framer"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
 
     singlecan_commands_reset_session();
 
