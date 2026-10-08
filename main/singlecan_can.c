@@ -7,7 +7,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 static const char *TAG =
     "SingleCAN";
@@ -20,12 +19,189 @@ static const char *TAG =
 /*
  * This flag controls whether the TWAI subsystem is available.
  *
- * The flag does not bypass frame validation. Future command handlers
- * must use verified, allowlisted Honda frame definitions before they
- * call singlecan_send().
+ * Enabling TWAI does not bypass the verified-mapping transmission
+ * gate. No arbitrary CAN identifier or payload transmission API is
+ * exposed by this module.
  */
 bool g_can_enabled =
     true;
+
+// ------------------------------------------------------------
+// PRIVATE VERIFIED-FRAME DEFINITION
+// ------------------------------------------------------------
+
+typedef struct {
+    uint32_t identifier;
+
+    uint8_t data_length_code;
+
+    uint8_t data[
+        SINGLECAN_CLASSIC_CAN_MAX_DLC
+    ];
+} singlecan_verified_frame_t;
+
+// ------------------------------------------------------------
+// PRIVATE VERIFIED-MAPPING LOOKUP
+// ------------------------------------------------------------
+
+static esp_err_t lookup_verified_frame(
+    singlecan_verified_command_t command,
+    singlecan_verified_frame_t *frame
+)
+{
+    if (frame == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Verified-frame lookup rejected: null output"
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /*
+     * No Honda Accord CAN mappings have been verified yet.
+     *
+     * Future mappings must be added as explicit enum cases. Each
+     * case must supply a reviewed identifier, DLC, and payload that
+     * were captured through PCAN hardware and PCAN-Explorer 7,
+     * independently verified, and approved for the Phase 1 scope.
+     *
+     * Generic runtime identifiers and payloads must never be
+     * accepted by this function.
+     */
+    switch (command) {
+        case SINGLECAN_VERIFIED_COMMAND_NONE:
+            return ESP_ERR_NOT_SUPPORTED;
+
+        default:
+            return ESP_ERR_NOT_SUPPORTED;
+    }
+}
+
+// ------------------------------------------------------------
+// PRIVATE VERIFIED-FRAME VALIDATION
+// ------------------------------------------------------------
+
+static esp_err_t validate_verified_frame(
+    const singlecan_verified_frame_t *frame
+)
+{
+    if (frame == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /*
+     * The current verified-frame structure represents standard
+     * 11-bit Classic CAN data frames only.
+     */
+    if (
+        frame->identifier >
+        SINGLECAN_STANDARD_ID_MAX
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Verified frame rejected: invalid standard identifier"
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (
+        frame->data_length_code >
+        SINGLECAN_CLASSIC_CAN_MAX_DLC
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Verified frame rejected: invalid DLC"
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return ESP_OK;
+}
+
+// ------------------------------------------------------------
+// PRIVATE VERIFIED-FRAME TRANSMISSION
+// ------------------------------------------------------------
+
+static esp_err_t transmit_verified_frame(
+    const singlecan_verified_frame_t *frame
+)
+{
+    const esp_err_t validation_result =
+        validate_verified_frame(
+            frame
+        );
+
+    if (
+        validation_result !=
+        ESP_OK
+    ) {
+        return validation_result;
+    }
+
+    twai_message_t message = {
+        .identifier =
+            frame->identifier,
+        .data_length_code =
+            frame->data_length_code,
+        .rtr =
+            0,
+        .ss =
+            0,
+        .self =
+            0,
+        .dlc_non_comp =
+            0,
+        .extd =
+            0
+    };
+
+    for (
+        uint8_t index = 0;
+        index <
+        frame->data_length_code;
+        ++index
+    ) {
+        message.data[index] =
+            frame->data[index];
+    }
+
+    const esp_err_t transmit_result =
+        twai_transmit(
+            &message,
+            pdMS_TO_TICKS(
+                SINGLECAN_TRANSMIT_TIMEOUT_MS
+            )
+        );
+
+    if (
+        transmit_result !=
+        ESP_OK
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Verified CAN transmission failed: %s",
+            esp_err_to_name(
+                transmit_result
+            )
+        );
+
+        singlecan_leds_error();
+
+        return transmit_result;
+    }
+
+    singlecan_leds_can_tx_active();
+
+    ESP_LOGI(
+        TAG,
+        "Verified CAN mapping submitted successfully"
+    );
+
+    return ESP_OK;
+}
 
 // ------------------------------------------------------------
 // INITIALIZE TWAI DRIVER
@@ -153,7 +329,7 @@ esp_err_t singlecan_disable_can(void)
 }
 
 // ------------------------------------------------------------
-// CAN STATUS STRING
+// CAN STATUS
 // ------------------------------------------------------------
 
 void singlecan_get_status(
@@ -172,7 +348,8 @@ void singlecan_get_status(
         snprintf(
             output,
             output_length,
-            "CAN_STATUS: %s MODE: NORMAL\n",
+            "CAN_STATUS: %s MODE: NORMAL "
+            "TX_POLICY: VERIFIED_MAPPINGS_ONLY\n",
             g_can_enabled
                 ? "ENABLED"
                 : "DISABLED"
@@ -185,132 +362,58 @@ void singlecan_get_status(
 }
 
 // ------------------------------------------------------------
-// TRANSMIT ONE STANDARD CLASSIC-CAN FRAME
+// PUBLIC VERIFIED-MAPPING TRANSMISSION GATE
 // ------------------------------------------------------------
 
-esp_err_t singlecan_send(
-    uint32_t can_id,
-    uint8_t *data,
-    uint8_t length
+esp_err_t singlecan_send_verified(
+    singlecan_verified_command_t command
 )
 {
     if (!g_can_enabled) {
         ESP_LOGW(
             TAG,
-            "CAN transmission rejected because CAN is disabled"
+            "Verified CAN transmission rejected: CAN is disabled"
         );
 
         return ESP_ERR_INVALID_STATE;
     }
 
-    /*
-     * SingleCAN currently constructs standard-format frames only.
-     * Reject identifiers that do not fit the 11-bit standard range.
-     */
-    if (
-        can_id >
-        SINGLECAN_STANDARD_ID_MAX
-    ) {
-        ESP_LOGE(
-            TAG,
-            "CAN transmission rejected: invalid standard identifier"
-        );
-
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (
-        length >
-        SINGLECAN_CLASSIC_CAN_MAX_DLC
-    ) {
-        ESP_LOGE(
-            TAG,
-            "CAN transmission rejected: DLC exceeds 8"
-        );
-
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (
-        length > 0 &&
-        data == NULL
-    ) {
-        ESP_LOGE(
-            TAG,
-            "CAN transmission rejected: null payload"
-        );
-
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    /*
-     * This API remains available for future verified mappings.
-     *
-     * No current canonical-command stub calls this function.
-     * Do not connect generic client input directly to this API.
-     * Future handlers must select reviewed identifiers, DLCs, and
-     * payloads from an explicit Phase 1 mapping allowlist.
-     */
-    twai_message_t message = {
+    singlecan_verified_frame_t frame = {
         .identifier =
-            can_id,
+            0,
         .data_length_code =
-            length,
-        .rtr =
             0,
-        .ss =
-            0,
-        .self =
-            0,
-        .dlc_non_comp =
-            0,
-        .extd =
+        .data = {
             0
+        }
     };
 
-    if (length > 0) {
-        memcpy(
-            message.data,
-            data,
-            length
-        );
-    }
-
-    const esp_err_t transmit_result =
-        twai_transmit(
-            &message,
-            pdMS_TO_TICKS(
-                SINGLECAN_TRANSMIT_TIMEOUT_MS
-            )
+    const esp_err_t lookup_result =
+        lookup_verified_frame(
+            command,
+            &frame
         );
 
     if (
-        transmit_result !=
+        lookup_result !=
         ESP_OK
     ) {
-        ESP_LOGE(
+        ESP_LOGW(
             TAG,
-            "CAN transmission failed: %s",
-            esp_err_to_name(
-                transmit_result
-            )
+            "CAN transmission rejected: "
+            "no verified mapping is installed"
         );
 
-        singlecan_leds_error();
-
-        return transmit_result;
+        /*
+         * No verified mapping was found. twai_transmit() is not
+         * called anywhere along this rejection path.
+         */
+        return lookup_result;
     }
 
-    singlecan_leds_can_tx_active();
-
-    ESP_LOGI(
-        TAG,
-        "Verified CAN frame submitted: id=0x%03lX dlc=%u",
-        (unsigned long)can_id,
-        length
+    return transmit_verified_frame(
+        &frame
     );
-
-    return ESP_OK;
 }
 
 // ------------------------------------------------------------
@@ -370,8 +473,7 @@ esp_err_t singlecan_receive(
     ) {
         ESP_LOGE(
             TAG,
-            "Discarding received frame with invalid DLC: %u",
-            message->data_length_code
+            "Discarding received frame with invalid DLC"
         );
 
         singlecan_leds_error();
@@ -384,9 +486,9 @@ esp_err_t singlecan_receive(
     /*
      * PCAN hardware and PCAN-Explorer 7 own CAN capture and decoding.
      *
-     * SingleCAN consumes the received frame only so the TWAI driver
-     * remains drained and its health can be monitored. The raw frame
-     * is not logged, serialized, queued, or sent over Bluetooth.
+     * SingleCAN removes this frame from the TWAI receive queue only
+     * to maintain controller health. The raw frame is not logged,
+     * serialized, queued, or forwarded through Bluetooth.
      */
     return ESP_OK;
 }
