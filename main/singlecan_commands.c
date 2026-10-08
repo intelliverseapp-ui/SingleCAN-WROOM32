@@ -5,6 +5,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
@@ -14,6 +15,17 @@
 
 static const char *TAG =
     "SingleCAN_CMDS";
+
+#define COMMAND_FIELD_ID "id"
+#define COMMAND_FIELD_TYPE "type"
+#define COMMAND_FIELD_COMMAND "command"
+#define COMMAND_FIELD_VALUE "value"
+
+#define COMMAND_TYPE "command"
+#define MODULE_CONFIG_COMMAND "config.module"
+
+#define MAXIMUM_COMMAND_LENGTH 64
+#define MAXIMUM_VALUE_LENGTH 64
 
 typedef enum {
     COMMAND_RESULT_NOT_IMPLEMENTED = 0,
@@ -29,8 +41,7 @@ typedef struct {
 
 /*
  * Configuration applies only to the current Bluetooth session.
- * bt_spp.c will reset this state when a client connects or
- * disconnects.
+ * bt_spp.c resets this state when a client connects or disconnects.
  */
 static bool s_single_can_configured =
     false;
@@ -245,7 +256,225 @@ int singlecan_commands_is_configured(void)
 }
 
 // ------------------------------------------------------------
-// SEND JSON RESPONSE TO BABYNODE AUTOMOTIVE
+// STRING VALIDATION
+// ------------------------------------------------------------
+
+static bool string_is_safe(
+    const char *text,
+    size_t maximum_length
+)
+{
+    if (
+        text == NULL ||
+        text[0] == '\0'
+    ) {
+        return false;
+    }
+
+    const size_t length =
+        strlen(
+            text
+        );
+
+    if (
+        length == 0 ||
+        length >
+        maximum_length
+    ) {
+        return false;
+    }
+
+    for (
+        size_t index = 0;
+        index < length;
+        ++index
+    ) {
+        const unsigned char character =
+            (unsigned char)text[index];
+
+        /*
+         * JSON parsing has already decoded escape sequences.
+         * Reject control characters and DEL in protocol fields.
+         */
+        if (
+            character < 0x20U ||
+            character == 0x7FU
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool packet_contains_escaped_nul(
+    const char *packet
+)
+{
+    if (packet == NULL) {
+        return false;
+    }
+
+    const size_t length =
+        strlen(
+            packet
+        );
+
+    for (
+        size_t index = 0;
+        index + 5 < length;
+        ++index
+    ) {
+        if (
+            packet[index] == '\\' &&
+            tolower(
+                (unsigned char)packet[index + 1]
+            ) == 'u' &&
+            packet[index + 2] == '0' &&
+            packet[index + 3] == '0' &&
+            packet[index + 4] == '0' &&
+            packet[index + 5] == '0'
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// ------------------------------------------------------------
+// STRICT JSON FIELD VALIDATION
+// ------------------------------------------------------------
+
+static bool field_name_is_allowed(
+    const char *field_name
+)
+{
+    if (field_name == NULL) {
+        return false;
+    }
+
+    return
+        strcmp(
+            field_name,
+            COMMAND_FIELD_ID
+        ) == 0 ||
+        strcmp(
+            field_name,
+            COMMAND_FIELD_TYPE
+        ) == 0 ||
+        strcmp(
+            field_name,
+            COMMAND_FIELD_COMMAND
+        ) == 0 ||
+        strcmp(
+            field_name,
+            COMMAND_FIELD_VALUE
+        ) == 0;
+}
+
+static bool validate_object_schema(
+    const cJSON *root
+)
+{
+    unsigned int id_count =
+        0;
+
+    unsigned int type_count =
+        0;
+
+    unsigned int command_count =
+        0;
+
+    unsigned int value_count =
+        0;
+
+    const cJSON *field =
+        NULL;
+
+    cJSON_ArrayForEach(
+        field,
+        root
+    ) {
+        if (
+            field->string ==
+            NULL
+        ) {
+            ESP_LOGW(
+                TAG,
+                "JSON object contains a field without a name"
+            );
+
+            return false;
+        }
+
+        if (
+            !field_name_is_allowed(
+                field->string
+            )
+        ) {
+            ESP_LOGW(
+                TAG,
+                "JSON object contains an unknown field"
+            );
+
+            return false;
+        }
+
+        if (
+            strcmp(
+                field->string,
+                COMMAND_FIELD_ID
+            ) == 0
+        ) {
+            id_count +=
+                1;
+        } else if (
+            strcmp(
+                field->string,
+                COMMAND_FIELD_TYPE
+            ) == 0
+        ) {
+            type_count +=
+                1;
+        } else if (
+            strcmp(
+                field->string,
+                COMMAND_FIELD_COMMAND
+            ) == 0
+        ) {
+            command_count +=
+                1;
+        } else if (
+            strcmp(
+                field->string,
+                COMMAND_FIELD_VALUE
+            ) == 0
+        ) {
+            value_count +=
+                1;
+        }
+    }
+
+    if (
+        id_count != 1 ||
+        type_count != 1 ||
+        command_count != 1 ||
+        value_count > 1
+    ) {
+        ESP_LOGW(
+            TAG,
+            "JSON object contains missing or duplicate fields"
+        );
+
+        return false;
+    }
+
+    return true;
+}
+
+// ------------------------------------------------------------
+// SEND JSON RESPONSE
 // ------------------------------------------------------------
 
 static void send_response(
@@ -379,10 +608,9 @@ static void send_response(
 
     ESP_LOGI(
         TAG,
-        "Sending response: id=%d status=%s command=%s",
+        "Sending response: id=%d status=%s",
         packet_id,
-        status,
-        command
+        status
     );
 
     const esp_err_t send_result =
@@ -462,12 +690,14 @@ static bool process_module_config(
 )
 {
     if (
-        value == NULL ||
-        value[0] == '\0'
+        !string_is_safe(
+            value,
+            MAXIMUM_VALUE_LENGTH
+        )
     ) {
         ESP_LOGW(
             TAG,
-            "config.module received without a value"
+            "config.module received with an invalid value"
         );
 
         s_single_can_configured =
@@ -493,10 +723,6 @@ static bool process_module_config(
         return true;
     }
 
-    /*
-     * This firmware controls one CAN channel only. It must not
-     * acknowledge Dual-CAN configuration that it cannot apply.
-     */
     if (
         strcasecmp(
             value,
@@ -508,7 +734,7 @@ static bool process_module_config(
 
         ESP_LOGW(
             TAG,
-            "Dual-CAN configuration rejected by SingleCAN firmware"
+            "Dual-CAN configuration rejected"
         );
 
         return false;
@@ -534,8 +760,10 @@ static command_result_t dispatch_command(
 )
 {
     if (
-        command == NULL ||
-        command[0] == '\0'
+        !string_is_safe(
+            command,
+            MAXIMUM_COMMAND_LENGTH
+        )
     ) {
         return COMMAND_RESULT_UNSUPPORTED;
     }
@@ -553,17 +781,12 @@ static command_result_t dispatch_command(
         ) {
             ESP_LOGI(
                 TAG,
-                "Recognized allowlisted command: %s",
-                command
+                "Recognized allowlisted command"
             );
 
             COMMAND_MAPPINGS[index]
                 .handler();
 
-            /*
-             * Every current handler is still a non-transmitting
-             * stub. Therefore recognition must not return ok.
-             */
             return COMMAND_RESULT_NOT_IMPLEMENTED;
         }
     }
@@ -584,6 +807,19 @@ static void process_json_packet(
     const char *packet
 )
 {
+    if (
+        packet_contains_escaped_nul(
+            packet
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "JSON packet contains an escaped NUL character"
+        );
+
+        return;
+    }
+
     const char *parse_end =
         NULL;
 
@@ -632,28 +868,40 @@ static void process_json_packet(
         return;
     }
 
+    if (
+        !validate_object_schema(
+            root
+        )
+    ) {
+        cJSON_Delete(
+            root
+        );
+
+        return;
+    }
+
     const cJSON *id_item =
         cJSON_GetObjectItemCaseSensitive(
             root,
-            "id"
+            COMMAND_FIELD_ID
         );
 
     const cJSON *type_item =
         cJSON_GetObjectItemCaseSensitive(
             root,
-            "type"
+            COMMAND_FIELD_TYPE
         );
 
     const cJSON *command_item =
         cJSON_GetObjectItemCaseSensitive(
             root,
-            "command"
+            COMMAND_FIELD_COMMAND
         );
 
     const cJSON *value_item =
         cJSON_GetObjectItemCaseSensitive(
             root,
-            "value"
+            COMMAND_FIELD_VALUE
         );
 
     int packet_id =
@@ -681,29 +929,18 @@ static void process_json_packet(
         !cJSON_IsString(
             type_item
         ) ||
-        type_item->valuestring == NULL
-    ) {
-        ESP_LOGW(
-            TAG,
-            "JSON packet is missing string field: type"
-        );
-
-        cJSON_Delete(
-            root
-        );
-
-        return;
-    }
-
-    if (
-        strcasecmp(
+        !string_is_safe(
             type_item->valuestring,
-            "command"
+            sizeof(COMMAND_TYPE) - 1
+        ) ||
+        strcmp(
+            type_item->valuestring,
+            COMMAND_TYPE
         ) != 0
     ) {
         ESP_LOGW(
             TAG,
-            "Unsupported JSON packet type"
+            "JSON packet contains an invalid type"
         );
 
         cJSON_Delete(
@@ -717,12 +954,14 @@ static void process_json_packet(
         !cJSON_IsString(
             command_item
         ) ||
-        command_item->valuestring == NULL ||
-        command_item->valuestring[0] == '\0'
+        !string_is_safe(
+            command_item->valuestring,
+            MAXIMUM_COMMAND_LENGTH
+        )
     ) {
         ESP_LOGW(
             TAG,
-            "JSON packet is missing string field: command"
+            "JSON packet contains an invalid command"
         );
 
         cJSON_Delete(
@@ -735,22 +974,61 @@ static void process_json_packet(
     const char *command =
         command_item->valuestring;
 
-    if (
-        value_item != NULL &&
-        !cJSON_IsString(
-            value_item
-        )
-    ) {
-        ESP_LOGW(
-            TAG,
-            "JSON value field must be a string"
-        );
+    const char *value =
+        NULL;
 
+    if (value_item != NULL) {
+        if (
+            !cJSON_IsString(
+                value_item
+            ) ||
+            !string_is_safe(
+                value_item->valuestring,
+                MAXIMUM_VALUE_LENGTH
+            )
+        ) {
+            ESP_LOGW(
+                TAG,
+                "JSON packet contains an invalid value"
+            );
+
+            send_response(
+                packet_id,
+                "error",
+                command,
+                "invalid_value"
+            );
+
+            cJSON_Delete(
+                root
+            );
+
+            return;
+        }
+
+        value =
+            value_item->valuestring;
+    }
+
+    const bool is_module_config =
+        strcasecmp(
+            command,
+            MODULE_CONFIG_COMMAND
+        ) == 0;
+
+    /*
+     * value is valid only for config.module.
+     * config.module requires exactly one value.
+     */
+    if (
+        is_module_config &&
+        value == NULL
+    ) {
         send_response(
             packet_id,
             "error",
             command,
-            "invalid_value_type"
+            "missing_value"
         );
 
         cJSON_Delete(
@@ -760,32 +1038,31 @@ static void process_json_packet(
         return;
     }
 
-    const char *value =
-        NULL;
-
     if (
-        cJSON_IsString(
-            value_item
-        ) &&
-        value_item->valuestring != NULL
+        !is_module_config &&
+        value != NULL
     ) {
-        value =
-            value_item->valuestring;
+        send_response(
+            packet_id,
+            "error",
+            command,
+            "unexpected_value"
+        );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
     }
 
     ESP_LOGI(
         TAG,
-        "Validated command envelope: id=%d command=%s",
-        packet_id,
-        command
+        "Validated command envelope: id=%d",
+        packet_id
     );
 
-    if (
-        strcasecmp(
-            command,
-            "config.module"
-        ) == 0
-    ) {
+    if (is_module_config) {
         if (
             process_module_config(
                 value
@@ -825,7 +1102,7 @@ static void process_json_packet(
     if (!s_single_can_configured) {
         ESP_LOGW(
             TAG,
-            "Vehicle command rejected before Single-CAN configuration"
+            "Vehicle command rejected before configuration"
         );
 
         send_response(
