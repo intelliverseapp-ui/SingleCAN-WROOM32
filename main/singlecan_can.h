@@ -110,8 +110,12 @@ void singlecan_get_status(
  *
  * SINGLECAN_VERIFIED_COMMAND_NONE is always rejected.
  *
- * Until verified Honda mappings are added, every call returns
- * ESP_ERR_NOT_SUPPORTED and no call reaches twai_transmit().
+ * Transmission is permitted only while CAN is enabled and the
+ * supervised TWAI subsystem is explicitly in its RUNNING state.
+ *
+ * Until verified Honda mappings are added, every call that reaches
+ * mapping lookup returns ESP_ERR_NOT_SUPPORTED and no call reaches
+ * twai_transmit().
  */
 esp_err_t singlecan_send_verified(
     singlecan_verified_command_t command
