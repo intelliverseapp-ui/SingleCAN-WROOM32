@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "singlecan_can.h"
 #include "singlecan_leds.h"
@@ -23,6 +24,15 @@ static const char *TAG_TASKS =
 
 #define CAN_RX_IDLE_DELAY_MS 10
 #define CAN_ERROR_DELAY_MS 250
+
+#define CAN_TASK_START_TIMEOUT_MS 5000
+
+#define CAN_TASK_EVENT_HEALTH_READY BIT0
+#define CAN_TASK_EVENT_RX_READY BIT1
+#define CAN_TASK_EVENT_FAILED BIT2
+
+#define CAN_TASK_EVENT_ALL_READY \
+    (CAN_TASK_EVENT_HEALTH_READY | CAN_TASK_EVENT_RX_READY)
 
 #define CAN_RECOVERY_MAXIMUM_ATTEMPTS 3
 #define CAN_RECOVERY_RETRY_DELAY_MS 500
@@ -48,6 +58,9 @@ static TaskHandle_t s_can_rx_task_handle =
     NULL;
 
 static TaskHandle_t s_can_health_task_handle =
+    NULL;
+
+static EventGroupHandle_t s_can_task_start_events =
     NULL;
 
 static volatile singlecan_twai_health_t s_twai_health =
@@ -526,6 +539,16 @@ static void can_health_task(
             "TWAI alert configuration failed"
         );
 
+        if (
+            s_can_task_start_events !=
+            NULL
+        ) {
+            xEventGroupSetBits(
+                s_can_task_start_events,
+                CAN_TASK_EVENT_FAILED
+            );
+        }
+
         s_can_health_task_handle =
             NULL;
 
@@ -544,6 +567,16 @@ static void can_health_task(
         TAG_TASKS,
         "TWAI health alerts enabled"
     );
+
+    if (
+        s_can_task_start_events !=
+        NULL
+    ) {
+        xEventGroupSetBits(
+            s_can_task_start_events,
+            CAN_TASK_EVENT_HEALTH_READY
+        );
+    }
 
     while (true) {
         uint32_t alerts =
@@ -631,6 +664,16 @@ static void can_rx_drain_task(
         "TWAI receive-drain task started"
     );
 
+    if (
+        s_can_task_start_events !=
+        NULL
+    ) {
+        xEventGroupSetBits(
+            s_can_task_start_events,
+            CAN_TASK_EVENT_RX_READY
+        );
+    }
+
     twai_message_t message;
 
     while (true) {
@@ -711,21 +754,43 @@ static void can_rx_drain_task(
 // START TWAI TASKS
 // ------------------------------------------------------------
 
-void start_can_rx_task(void)
+esp_err_t start_can_rx_task(void)
 {
     if (
-        s_can_rx_task_handle !=
-            NULL ||
-        s_can_health_task_handle !=
-            NULL
+        s_can_rx_task_handle != NULL ||
+        s_can_health_task_handle != NULL
     ) {
         ESP_LOGW(
             TAG_TASKS,
             "TWAI tasks are already running"
         );
 
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
+
+    if (s_can_task_start_events == NULL) {
+        s_can_task_start_events =
+            xEventGroupCreate();
+
+        if (s_can_task_start_events == NULL) {
+            ESP_LOGE(
+                TAG_TASKS,
+                "TWAI startup event-group creation failed"
+            );
+
+            enter_twai_fault_state(
+                "TWAI startup synchronization creation failed"
+            );
+
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    xEventGroupClearBits(
+        s_can_task_start_events,
+        CAN_TASK_EVENT_ALL_READY |
+            CAN_TASK_EVENT_FAILED
+    );
 
     set_twai_health(
         TWAI_HEALTH_STARTING
@@ -741,10 +806,7 @@ void start_can_rx_task(void)
             &s_can_health_task_handle
         );
 
-    if (
-        health_task_result !=
-        pdPASS
-    ) {
+    if (health_task_result != pdPASS) {
         ESP_LOGE(
             TAG_TASKS,
             "TWAI health task creation failed"
@@ -757,7 +819,7 @@ void start_can_rx_task(void)
             "TWAI health task creation failed"
         );
 
-        return;
+        return ESP_ERR_NO_MEM;
     }
 
     const BaseType_t receive_task_result =
@@ -770,19 +832,13 @@ void start_can_rx_task(void)
             &s_can_rx_task_handle
         );
 
-    if (
-        receive_task_result !=
-        pdPASS
-    ) {
+    if (receive_task_result != pdPASS) {
         ESP_LOGE(
             TAG_TASKS,
             "TWAI receive-drain task creation failed"
         );
 
-        if (
-            s_can_health_task_handle !=
-            NULL
-        ) {
+        if (s_can_health_task_handle != NULL) {
             vTaskDelete(
                 s_can_health_task_handle
             );
@@ -798,11 +854,73 @@ void start_can_rx_task(void)
             "TWAI receive-drain task creation failed"
         );
 
-        return;
+        return ESP_ERR_NO_MEM;
+    }
+
+    const EventBits_t startup_bits =
+        xEventGroupWaitBits(
+            s_can_task_start_events,
+            CAN_TASK_EVENT_ALL_READY |
+                CAN_TASK_EVENT_FAILED,
+            pdFALSE,
+            pdFALSE,
+            pdMS_TO_TICKS(
+                CAN_TASK_START_TIMEOUT_MS
+            )
+        );
+
+    if (
+        startup_bits &
+        CAN_TASK_EVENT_FAILED
+    ) {
+        ESP_LOGE(
+            TAG_TASKS,
+            "TWAI task startup reported an asynchronous failure"
+        );
+
+        enter_twai_fault_state(
+            "TWAI task asynchronous startup failure"
+        );
+
+        return ESP_FAIL;
+    }
+
+    if (
+        (
+            startup_bits &
+            CAN_TASK_EVENT_ALL_READY
+        ) !=
+        CAN_TASK_EVENT_ALL_READY
+    ) {
+        ESP_LOGE(
+            TAG_TASKS,
+            "Timed out waiting for TWAI task readiness"
+        );
+
+        enter_twai_fault_state(
+            "TWAI task readiness timeout"
+        );
+
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (!twai_is_running()) {
+        ESP_LOGE(
+            TAG_TASKS,
+            "TWAI tasks reported ready without RUNNING health"
+        );
+
+        enter_twai_fault_state(
+            "TWAI readiness verification failed"
+        );
+
+        return ESP_ERR_INVALID_STATE;
     }
 
     ESP_LOGI(
         TAG_TASKS,
-        "TWAI receive-drain and health-monitor tasks started"
+        "TWAI receive-drain and health-monitor tasks ready"
     );
+
+    return ESP_OK;
 }

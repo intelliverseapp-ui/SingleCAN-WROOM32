@@ -159,8 +159,22 @@ void app_main(void)
      *
      * Raw CAN frames are not logged, serialized, queued, or sent
      * through Bluetooth.
+     *
+     * Bluetooth startup cannot begin until both CAN supervision
+     * tasks confirm readiness.
      */
-    start_can_rx_task();
+    const esp_err_t can_tasks_result =
+        start_can_rx_task();
+
+    if (
+        can_tasks_result !=
+        ESP_OK
+    ) {
+        enter_fault_state(
+            "CAN supervision tasks",
+            can_tasks_result
+        );
+    }
 
     /*
      * Begin Bluetooth Classic SPP initialization.
@@ -217,7 +231,7 @@ void app_main(void)
      *
      * - NVS initialized
      * - TWAI initialized
-     * - TWAI tasks started
+     * - TWAI supervision tasks confirmed ready
      * - Bluetooth controller and Bluedroid initialized
      * - SPP server startup confirmed
      */
@@ -226,7 +240,7 @@ void app_main(void)
     ESP_LOGI(
         TAG,
         "SingleCAN ready "
-        "(Bluetooth SPP server confirmed + CAN initialized)"
+        "(Bluetooth SPP server confirmed + CAN supervision ready)"
     );
 
     while (true) {
