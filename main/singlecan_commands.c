@@ -5,6 +5,9 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include <ctype.h>
 #include <limits.h>
 #include <math.h>
@@ -26,6 +29,9 @@ static const char *TAG =
 
 #define MAXIMUM_COMMAND_LENGTH 64
 #define MAXIMUM_VALUE_LENGTH 64
+
+#define REQUEST_RATE_WINDOW_MS 1000
+#define REQUEST_RATE_MAXIMUM_COUNT 20
 
 typedef enum {
     COMMAND_RESULT_NOT_IMPLEMENTED = 0,
@@ -54,6 +60,15 @@ static bool s_request_id_history_valid =
 static int s_highest_request_id =
     -1;
 
+static TickType_t s_request_rate_window_start =
+    0;
+
+static uint32_t s_request_rate_count =
+    0;
+
+static bool s_request_rate_limit_logged =
+    false;
+
 // ------------------------------------------------------------
 // FORWARD DECLARATIONS
 // ------------------------------------------------------------
@@ -81,6 +96,8 @@ static command_result_t dispatch_command(
 static void process_json_packet(
     const char *packet
 );
+
+static bool request_rate_limit_allows_packet(void);
 
 // ------------------------------------------------------------
 // COMMAND ALLOWLIST
@@ -256,10 +273,19 @@ void singlecan_commands_reset_session(void)
     s_highest_request_id =
         -1;
 
+    s_request_rate_window_start =
+        0;
+
+    s_request_rate_count =
+        0;
+
+    s_request_rate_limit_logged =
+        false;
+
     ESP_LOGI(
         TAG,
-        "Command session reset; configuration and request-ID "
-        "history cleared"
+        "Command session reset; configuration, request-ID "
+        "history, and rate-limit state cleared"
     );
 }
 
@@ -839,6 +865,65 @@ static command_result_t dispatch_command(
 }
 
 // ------------------------------------------------------------
+// PER-SESSION REQUEST RATE LIMIT
+// ------------------------------------------------------------
+
+static bool request_rate_limit_allows_packet(void)
+{
+    const TickType_t current_tick =
+        xTaskGetTickCount();
+
+    const TickType_t window_ticks =
+        pdMS_TO_TICKS(
+            REQUEST_RATE_WINDOW_MS
+        );
+
+    if (
+        s_request_rate_window_start == 0 ||
+        (
+            current_tick -
+            s_request_rate_window_start
+        ) >=
+            window_ticks
+    ) {
+        s_request_rate_window_start =
+            current_tick;
+
+        s_request_rate_count =
+            0;
+
+        s_request_rate_limit_logged =
+            false;
+    }
+
+    if (
+        s_request_rate_count >=
+        REQUEST_RATE_MAXIMUM_COUNT
+    ) {
+        if (!s_request_rate_limit_logged) {
+            ESP_LOGW(
+                TAG,
+                "Per-session request rate exceeded: "
+                "maximum=%d requests per %d ms; "
+                "excess frames will be dropped",
+                REQUEST_RATE_MAXIMUM_COUNT,
+                REQUEST_RATE_WINDOW_MS
+            );
+
+            s_request_rate_limit_logged =
+                true;
+        }
+
+        return false;
+    }
+
+    s_request_rate_count +=
+        1;
+
+    return true;
+}
+
+// ------------------------------------------------------------
 // PROCESS JSON COMMAND ENVELOPE
 // ------------------------------------------------------------
 
@@ -846,6 +931,12 @@ static void process_json_packet(
     const char *packet
 )
 {
+    if (
+        !request_rate_limit_allows_packet()
+    ) {
+        return;
+    }
+
     if (
         packet_contains_escaped_nul(
             packet
