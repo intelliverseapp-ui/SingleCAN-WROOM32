@@ -65,6 +65,18 @@ static volatile uint32_t s_inflight_handle =
 static volatile uint32_t s_inflight_session_id =
     0;
 
+static uint32_t s_queue_full_count =
+    0;
+
+static uint32_t s_immediate_write_failure_count =
+    0;
+
+static uint32_t s_asynchronous_write_failure_count =
+    0;
+
+static uint32_t s_write_timeout_count =
+    0;
+
 // ------------------------------------------------------------
 // FORWARD DECLARATIONS
 // ------------------------------------------------------------
@@ -72,6 +84,56 @@ static volatile uint32_t s_inflight_session_id =
 static void bt_spp_writer_task(
     void *task_argument
 );
+
+// ------------------------------------------------------------
+// DELIVERY-FAILURE ACCOUNTING
+// ------------------------------------------------------------
+
+static uint32_t increment_counter(
+    uint32_t *counter
+)
+{
+    if (counter == NULL) {
+        return 0;
+    }
+
+    uint32_t value;
+
+    portENTER_CRITICAL(
+        &s_writer_lock
+    );
+
+    *counter +=
+        1;
+
+    value =
+        *counter;
+
+    portEXIT_CRITICAL(
+        &s_writer_lock
+    );
+
+    return value;
+}
+
+static void disconnect_failed_session(
+    uint32_t handle,
+    uint32_t session_id
+)
+{
+    if (
+        handle == 0 ||
+        session_id == 0 ||
+        s_disconnect_handler == NULL
+    ) {
+        return;
+    }
+
+    s_disconnect_handler(
+        handle,
+        session_id
+    );
+}
 
 // ------------------------------------------------------------
 // SESSION SNAPSHOT
@@ -435,7 +497,24 @@ static void bt_spp_writer_task(
                 )
             );
 
+            const uint32_t failure_count =
+                increment_counter(
+                    &s_immediate_write_failure_count
+                );
+
+            ESP_LOGE(
+                TAG,
+                "Immediate SPP write failures=%" PRIu32
+                "; closing affected session",
+                failure_count
+            );
+
             clear_inflight_write(
+                session.handle,
+                session.session_id
+            );
+
+            disconnect_failed_session(
                 session.handle,
                 session.session_id
             );
@@ -475,14 +554,33 @@ static void bt_spp_writer_task(
             completion_bits &
             BT_SPP_WRITER_EVENT_WRITE_FAILED
         ) {
+            const uint32_t failure_count =
+                increment_counter(
+                    &s_asynchronous_write_failure_count
+                );
+
             ESP_LOGE(
                 TAG,
-                "Serialized SPP write failed or session closed"
+                "Serialized SPP write failed or session closed; "
+                "asynchronous failures=%" PRIu32,
+                failure_count
+            );
+
+            disconnect_failed_session(
+                session.handle,
+                session.session_id
             );
         } else {
+            const uint32_t timeout_count =
+                increment_counter(
+                    &s_write_timeout_count
+                );
+
             ESP_LOGE(
                 TAG,
-                "Serialized SPP write timed out"
+                "Serialized SPP write timed out; "
+                "timeouts=%" PRIu32,
+                timeout_count
             );
 
             bt_spp_writer_session_t current_session;
@@ -576,6 +674,18 @@ esp_err_t bt_spp_writer_init(
         0;
 
     s_inflight_session_id =
+        0;
+
+    s_queue_full_count =
+        0;
+
+    s_immediate_write_failure_count =
+        0;
+
+    s_asynchronous_write_failure_count =
+        0;
+
+    s_write_timeout_count =
         0;
 
     portEXIT_CRITICAL(
@@ -790,9 +900,21 @@ esp_err_t bt_spp_writer_send(
         ) !=
         pdTRUE
     ) {
+        const uint32_t failure_count =
+            increment_counter(
+                &s_queue_full_count
+            );
+
         ESP_LOGE(
             TAG,
-            "SPP outbound queue is full"
+            "SPP outbound queue is full; drops=%" PRIu32
+            "; closing affected session",
+            failure_count
+        );
+
+        disconnect_failed_session(
+            current_session.handle,
+            current_session.session_id
         );
 
         return ESP_ERR_NO_MEM;
@@ -940,4 +1062,37 @@ int bt_spp_writer_on_write_event(
     }
 
     return 1;
+}
+
+// ------------------------------------------------------------
+// PUBLIC DELIVERY STATISTICS
+// ------------------------------------------------------------
+
+void bt_spp_writer_get_stats(
+    bt_spp_writer_stats_t *stats
+)
+{
+    if (stats == NULL) {
+        return;
+    }
+
+    portENTER_CRITICAL(
+        &s_writer_lock
+    );
+
+    stats->queue_full =
+        s_queue_full_count;
+
+    stats->immediate_write_failures =
+        s_immediate_write_failure_count;
+
+    stats->asynchronous_write_failures =
+        s_asynchronous_write_failure_count;
+
+    stats->write_timeouts =
+        s_write_timeout_count;
+
+    portEXIT_CRITICAL(
+        &s_writer_lock
+    );
 }
