@@ -36,6 +36,8 @@ static const char *TAG_TASKS =
 
 #define CAN_RECOVERY_MAXIMUM_ATTEMPTS 3
 #define CAN_RECOVERY_RETRY_DELAY_MS 500
+#define CAN_ALERT_POLL_INTERVAL_MS 250
+#define CAN_RECOVERY_COMPLETION_TIMEOUT_MS 10000
 
 #define SINGLECAN_TWAI_ALERTS \
     (TWAI_ALERT_BUS_OFF | \
@@ -65,6 +67,12 @@ static EventGroupHandle_t s_can_task_start_events =
 
 static volatile singlecan_twai_health_t s_twai_health =
     TWAI_HEALTH_STARTING;
+
+static TickType_t s_recovery_start_tick =
+    0;
+
+static int s_recovery_deadline_active =
+    0;
 
 // ------------------------------------------------------------
 // TWAI HEALTH-STATE HELPERS
@@ -133,6 +141,12 @@ static void enter_twai_fault_state(
     const char *reason
 )
 {
+    s_recovery_deadline_active =
+        0;
+
+    s_recovery_start_tick =
+        0;
+
     set_twai_health(
         TWAI_HEALTH_FAULTED
     );
@@ -266,11 +280,19 @@ static void initiate_bus_recovery(void)
             recovery_result ==
             ESP_OK
         ) {
+            s_recovery_start_tick =
+                xTaskGetTickCount();
+
+            s_recovery_deadline_active =
+                1;
+
             ESP_LOGW(
                 TAG_TASKS,
                 "TWAI bus-off recovery initiated "
-                "on attempt %" PRIu32,
-                attempt
+                "on attempt %" PRIu32
+                "; completion deadline=%d ms",
+                attempt,
+                CAN_RECOVERY_COMPLETION_TIMEOUT_MS
             );
 
             return;
@@ -326,6 +348,12 @@ static void complete_bus_recovery(void)
             "an active recovery state"
         );
     }
+
+    s_recovery_deadline_active =
+        0;
+
+    s_recovery_start_tick =
+        0;
 
     ESP_LOGI(
         TAG_TASKS,
@@ -585,7 +613,9 @@ static void can_health_task(
         const esp_err_t read_result =
             twai_read_alerts(
                 &alerts,
-                portMAX_DELAY
+                pdMS_TO_TICKS(
+                    CAN_ALERT_POLL_INTERVAL_MS
+                )
             );
 
         if (
@@ -595,41 +625,12 @@ static void can_health_task(
             process_twai_alerts(
                 alerts
             );
-
-            continue;
-        }
-
-        if (
-            read_result ==
+        } else if (
+            read_result !=
+            ESP_ERR_TIMEOUT &&
+            read_result !=
             ESP_ERR_INVALID_STATE
         ) {
-            if (twai_is_recovering()) {
-                ESP_LOGW(
-                    TAG_TASKS,
-                    "TWAI alert monitor waiting during recovery"
-                );
-            } else if (twai_is_faulted()) {
-                ESP_LOGE(
-                    TAG_TASKS,
-                    "TWAI alert monitor stopped by terminal fault"
-                );
-
-                vTaskDelay(
-                    pdMS_TO_TICKS(
-                        CAN_ERROR_DELAY_MS
-                    )
-                );
-            } else {
-                ESP_LOGE(
-                    TAG_TASKS,
-                    "TWAI alert monitor lost active driver state"
-                );
-
-                enter_twai_fault_state(
-                    "TWAI alert driver became unavailable"
-                );
-            }
-        } else {
             ESP_LOGE(
                 TAG_TASKS,
                 "TWAI alert read failed: %s",
@@ -639,13 +640,60 @@ static void can_health_task(
             );
 
             singlecan_leds_error();
+        } else if (
+            read_result ==
+                ESP_ERR_INVALID_STATE &&
+            !twai_is_recovering() &&
+            !twai_is_faulted()
+        ) {
+            ESP_LOGE(
+                TAG_TASKS,
+                "TWAI alert monitor lost active driver state"
+            );
+
+            enter_twai_fault_state(
+                "TWAI alert driver became unavailable"
+            );
         }
 
-        vTaskDelay(
-            pdMS_TO_TICKS(
-                CAN_ERROR_DELAY_MS
-            )
-        );
+        if (
+            s_recovery_deadline_active &&
+            twai_is_recovering()
+        ) {
+            const TickType_t elapsed_ticks =
+                xTaskGetTickCount() -
+                s_recovery_start_tick;
+
+            if (
+                elapsed_ticks >=
+                pdMS_TO_TICKS(
+                    CAN_RECOVERY_COMPLETION_TIMEOUT_MS
+                )
+            ) {
+                ESP_LOGE(
+                    TAG_TASKS,
+                    "TWAI recovery completion timed out "
+                    "after %d ms",
+                    CAN_RECOVERY_COMPLETION_TIMEOUT_MS
+                );
+
+                log_twai_status(
+                    "recovery completion timeout"
+                );
+
+                enter_twai_fault_state(
+                    "TWAI recovery completion deadline expired"
+                );
+            }
+        }
+
+        if (twai_is_faulted()) {
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    CAN_ERROR_DELAY_MS
+                )
+            );
+        }
     }
 }
 
