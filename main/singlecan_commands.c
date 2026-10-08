@@ -40,11 +40,19 @@ typedef struct {
 } command_mapping_t;
 
 /*
- * Configuration applies only to the current Bluetooth session.
- * bt_spp.c resets this state when a client connects or disconnects.
+ * All command state applies only to the current Bluetooth session.
+ *
+ * bt_spp.c calls singlecan_commands_reset_session() during
+ * initialization, connection, and disconnection.
  */
 static bool s_single_can_configured =
     false;
+
+static bool s_request_id_history_valid =
+    false;
+
+static int s_highest_request_id =
+    -1;
 
 // ------------------------------------------------------------
 // FORWARD DECLARATIONS
@@ -242,9 +250,16 @@ void singlecan_commands_reset_session(void)
     s_single_can_configured =
         false;
 
+    s_request_id_history_valid =
+        false;
+
+    s_highest_request_id =
+        -1;
+
     ESP_LOGI(
         TAG,
-        "Command session reset; module configuration required"
+        "Command session reset; configuration and request-ID "
+        "history cleared"
     );
 }
 
@@ -292,10 +307,6 @@ static bool string_is_safe(
         const unsigned char character =
             (unsigned char)text[index];
 
-        /*
-         * JSON parsing has already decoded escape sequences.
-         * Reject control characters and DEL in protocol fields.
-         */
         if (
             character < 0x20U ||
             character == 0x7FU
@@ -402,7 +413,7 @@ static bool validate_object_schema(
         ) {
             ESP_LOGW(
                 TAG,
-                "JSON object contains a field without a name"
+                "JSON object contains an unnamed field"
             );
 
             return false;
@@ -679,6 +690,34 @@ static bool parse_packet_id(
         (int)numeric_id;
 
     return true;
+}
+
+// ------------------------------------------------------------
+// REQUEST-ID REPLAY PROTECTION
+// ------------------------------------------------------------
+
+static bool request_id_is_fresh(
+    int packet_id
+)
+{
+    if (!s_request_id_history_valid) {
+        return true;
+    }
+
+    return
+        packet_id >
+        s_highest_request_id;
+}
+
+static void record_request_id(
+    int packet_id
+)
+{
+    s_highest_request_id =
+        packet_id;
+
+    s_request_id_history_valid =
+        true;
 }
 
 // ------------------------------------------------------------
@@ -1016,10 +1055,6 @@ static void process_json_packet(
             MODULE_CONFIG_COMMAND
         ) == 0;
 
-    /*
-     * value is valid only for config.module.
-     * config.module requires exactly one value.
-     */
     if (
         is_module_config &&
         value == NULL
@@ -1056,9 +1091,51 @@ static void process_json_packet(
         return;
     }
 
+    /*
+     * The packet has now passed structural schema, type, command,
+     * value, and command-specific field validation.
+     *
+     * Reject duplicate, replayed, or out-of-order IDs before any
+     * configuration change or vehicle-command dispatch occurs.
+     */
+    if (
+        !request_id_is_fresh(
+            packet_id
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Duplicate, replayed, or out-of-order request ID rejected"
+        );
+
+        send_response(
+            packet_id,
+            "error",
+            command,
+            "duplicate_request_id"
+        );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
+    }
+
+    /*
+     * Record the ID before command processing.
+     *
+     * This prevents an accepted malformed configuration value,
+     * unknown command, or currently unsupported command from being
+     * replayed under the same ID.
+     */
+    record_request_id(
+        packet_id
+    );
+
     ESP_LOGI(
         TAG,
-        "Validated command envelope: id=%d",
+        "Validated fresh command envelope: id=%d",
         packet_id
     );
 
@@ -1185,202 +1262,139 @@ void singlecan_commands_process(
 // These handlers intentionally do not send CAN frames.
 // ------------------------------------------------------------
 
-void singlecan_cmd_lock_doors(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: lock doors; mapping not implemented"
-    );
-}
+#define DEFINE_COMMAND_STUB(function_name, description) \
+    void function_name(void) \
+    { \
+        ESP_LOGI( \
+            TAG, \
+            "CMD recognized: " description \
+            "; mapping not implemented" \
+        ); \
+    }
 
-void singlecan_cmd_unlock_doors(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: unlock doors; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_lock_doors,
+    "lock doors"
+)
 
-void singlecan_cmd_windows_down(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: windows down; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_unlock_doors,
+    "unlock doors"
+)
 
-void singlecan_cmd_windows_up(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: windows up; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_windows_down,
+    "windows down"
+)
 
-void singlecan_cmd_sunroof_open(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: sunroof open; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_windows_up,
+    "windows up"
+)
 
-void singlecan_cmd_sunroof_close(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: sunroof close; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_sunroof_open,
+    "sunroof open"
+)
 
-void singlecan_cmd_sunroof_vent(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: sunroof vent; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_sunroof_close,
+    "sunroof close"
+)
 
-void singlecan_cmd_headlights_on(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: headlights on; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_sunroof_vent,
+    "sunroof vent"
+)
 
-void singlecan_cmd_headlights_off(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: headlights off; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_headlights_on,
+    "headlights on"
+)
 
-void singlecan_cmd_fog_lights_on(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: fog lights on; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_headlights_off,
+    "headlights off"
+)
 
-void singlecan_cmd_fog_lights_off(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: fog lights off; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_fog_lights_on,
+    "fog lights on"
+)
 
-void singlecan_cmd_interior_lights_on(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: interior lights on; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_fog_lights_off,
+    "fog lights off"
+)
 
-void singlecan_cmd_interior_lights_off(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: interior lights off; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_interior_lights_on,
+    "interior lights on"
+)
 
-void singlecan_cmd_ac_on(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: AC on; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_interior_lights_off,
+    "interior lights off"
+)
 
-void singlecan_cmd_ac_off(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: AC off; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_ac_on,
+    "AC on"
+)
 
-void singlecan_cmd_fan_up(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: fan up; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_ac_off,
+    "AC off"
+)
 
-void singlecan_cmd_fan_down(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: fan down; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_fan_up,
+    "fan up"
+)
 
-void singlecan_cmd_audio_mute(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: audio mute; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_fan_down,
+    "fan down"
+)
 
-void singlecan_cmd_audio_unmute(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: audio unmute; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_audio_mute,
+    "audio mute"
+)
 
-void singlecan_cmd_trunk_open(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: trunk open; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_audio_unmute,
+    "audio unmute"
+)
 
-void singlecan_cmd_horn(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: horn; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_trunk_open,
+    "trunk open"
+)
 
-void singlecan_cmd_hazards_on(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: hazards on; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_horn,
+    "horn"
+)
 
-void singlecan_cmd_hazards_off(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: hazards off; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_hazards_on,
+    "hazards on"
+)
 
-void singlecan_cmd_defrost_on(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: defrost on; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_hazards_off,
+    "hazards off"
+)
 
-void singlecan_cmd_defrost_off(void)
-{
-    ESP_LOGI(
-        TAG,
-        "CMD recognized: defrost off; mapping not implemented"
-    );
-}
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_defrost_on,
+    "defrost on"
+)
+
+DEFINE_COMMAND_STUB(
+    singlecan_cmd_defrost_off,
+    "defrost off"
+)
+
+#undef DEFINE_COMMAND_STUB
