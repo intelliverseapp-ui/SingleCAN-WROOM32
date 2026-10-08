@@ -45,8 +45,8 @@ int bt_spp_is_server_ready(void);
  * Returns:
  * - ESP_OK when ESP_SPP_START_EVT confirms successful server startup
  * - ESP_ERR_TIMEOUT when startup is not confirmed before timeout_ms
- * - ESP_ERR_INVALID_STATE when the SPP readiness mechanism has not
- *   been initialized or server startup fails
+ * - ESP_ERR_INVALID_STATE when the readiness mechanism has not been
+ *   initialized or startup fails without a specific error
  * - Another ESP-IDF error when startup failure information is
  *   available
  */
@@ -55,24 +55,29 @@ esp_err_t bt_spp_wait_until_ready(
 );
 
 // ------------------------------------------------------------
-// SPP CONNECTION STATE
+// ACTIVE SPP CONNECTION
 // ------------------------------------------------------------
 
 /**
- * Returns nonzero when an authenticated SPP client is connected.
+ * Returns nonzero when the one permitted SPP client is connected.
  *
- * This is separate from server readiness. The SPP server may be
- * ready while no Android client is connected.
+ * SingleCAN supports exactly one active SPP client. Additional
+ * connection attempts are rejected by bt_spp.c and cannot replace
+ * the active session.
+ *
+ * This is separate from server readiness. The server may be ready
+ * while no client is connected.
  */
 int bt_spp_is_connected(void);
 
 /**
  * Returns the active SPP connection handle.
  *
- * Returns zero when no SPP client is connected.
+ * Returns zero when no client owns the SPP session.
  *
- * External modules must not call esp_spp_write() directly with this
- * handle. All outbound messages must use bt_spp_send().
+ * External modules must not call esp_spp_write() or
+ * esp_spp_disconnect() with this handle. Connection ownership,
+ * disconnection, and all outbound writes belong to bt_spp.c.
  */
 uint32_t bt_spp_get_handle(void);
 
@@ -81,7 +86,7 @@ uint32_t bt_spp_get_handle(void);
 // ------------------------------------------------------------
 
 /**
- * Queues one newline-delimited text message for transmission to the
+ * Queues one newline-delimited response for transmission to the
  * active SPP client.
  *
  * The supplied message must:
@@ -91,27 +96,31 @@ uint32_t bt_spp_get_handle(void);
  * - Fit within the configured outbound-message limit
  *
  * bt_spp.c owns:
- * - The active SPP connection handle
- * - Connection-session isolation
+ * - Single-client connection ownership
+ * - Active handle and session generation
+ * - In-flight write ownership
+ * - Session-transition cancellation
  * - Outbound-message serialization
  * - Newline framing
  * - Congestion handling
+ * - Bounded write-completion waiting
  * - ESP_SPP_WRITE_EVT completion handling
+ * - Stale-event rejection
  * - Disconnect cleanup
  *
  * No other source file may call esp_spp_write() directly.
  *
  * Returns:
- * - ESP_OK when the message enters the SPP writer queue
+ * - ESP_OK when the message enters the writer queue
  * - ESP_ERR_INVALID_ARG for a null or empty message
  * - ESP_ERR_INVALID_SIZE when the message is too large
- * - ESP_ERR_INVALID_STATE when the SPP server, connection, or writer
- *   is unavailable
+ * - ESP_ERR_INVALID_STATE when the server, connection, session, or
+ *   writer is unavailable
  * - ESP_ERR_NO_MEM when the outbound queue cannot accept the message
  * - Another ESP-IDF error when the request cannot be accepted
  *
  * ESP_OK means the message entered the writer pipeline. It does not
- * mean ESP_SPP_WRITE_EVT has confirmed completion.
+ * mean ESP_SPP_WRITE_EVT confirmed successful transmission.
  */
 esp_err_t bt_spp_send(
     const char *message
