@@ -123,6 +123,11 @@ static bool twai_is_running(void)
         TWAI_HEALTH_RUNNING;
 }
 
+bool singlecan_tasks_is_twai_running(void)
+{
+    return twai_is_running();
+}
+
 static bool twai_is_recovering(void)
 {
     return

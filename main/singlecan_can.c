@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 #include "singlecan_leds.h"
+#include "tasks.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -378,6 +379,18 @@ esp_err_t singlecan_send_verified(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (
+        !singlecan_tasks_is_twai_running()
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Verified CAN transmission rejected: "
+            "TWAI supervision is not RUNNING"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
     singlecan_verified_frame_t frame = {
         .identifier =
             0,
@@ -409,6 +422,18 @@ esp_err_t singlecan_send_verified(
          * called anywhere along this rejection path.
          */
         return lookup_result;
+    }
+
+    if (
+        !singlecan_tasks_is_twai_running()
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Verified CAN transmission canceled: "
+            "TWAI left the RUNNING state"
+        );
+
+        return ESP_ERR_INVALID_STATE;
     }
 
     return transmit_verified_frame(
