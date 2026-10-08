@@ -24,6 +24,9 @@ static const char *TAG_TASKS =
 #define CAN_RX_IDLE_DELAY_MS 10
 #define CAN_ERROR_DELAY_MS 250
 
+#define CAN_RECOVERY_MAXIMUM_ATTEMPTS 3
+#define CAN_RECOVERY_RETRY_DELAY_MS 500
+
 #define SINGLECAN_TWAI_ALERTS \
     (TWAI_ALERT_BUS_OFF | \
      TWAI_ALERT_BUS_RECOVERED | \
@@ -34,14 +37,110 @@ static const char *TAG_TASKS =
      TWAI_ALERT_BUS_ERROR | \
      TWAI_ALERT_RX_QUEUE_FULL)
 
+typedef enum {
+    TWAI_HEALTH_STARTING = 0,
+    TWAI_HEALTH_RUNNING,
+    TWAI_HEALTH_RECOVERING,
+    TWAI_HEALTH_FAULTED
+} singlecan_twai_health_t;
+
 static TaskHandle_t s_can_rx_task_handle =
     NULL;
 
 static TaskHandle_t s_can_health_task_handle =
     NULL;
 
-static volatile bool s_bus_recovery_active =
-    false;
+static volatile singlecan_twai_health_t s_twai_health =
+    TWAI_HEALTH_STARTING;
+
+// ------------------------------------------------------------
+// TWAI HEALTH-STATE HELPERS
+// ------------------------------------------------------------
+
+static const char *twai_health_name(
+    singlecan_twai_health_t health
+)
+{
+    switch (health) {
+        case TWAI_HEALTH_STARTING:
+            return "STARTING";
+
+        case TWAI_HEALTH_RUNNING:
+            return "RUNNING";
+
+        case TWAI_HEALTH_RECOVERING:
+            return "RECOVERING";
+
+        case TWAI_HEALTH_FAULTED:
+            return "FAULTED";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static void set_twai_health(
+    singlecan_twai_health_t health
+)
+{
+    s_twai_health =
+        health;
+
+    ESP_LOGI(
+        TAG_TASKS,
+        "TWAI health state changed: %s",
+        twai_health_name(
+            health
+        )
+    );
+}
+
+static bool twai_is_running(void)
+{
+    return
+        s_twai_health ==
+        TWAI_HEALTH_RUNNING;
+}
+
+static bool twai_is_recovering(void)
+{
+    return
+        s_twai_health ==
+        TWAI_HEALTH_RECOVERING;
+}
+
+static bool twai_is_faulted(void)
+{
+    return
+        s_twai_health ==
+        TWAI_HEALTH_FAULTED;
+}
+
+static void enter_twai_fault_state(
+    const char *reason
+)
+{
+    set_twai_health(
+        TWAI_HEALTH_FAULTED
+    );
+
+    singlecan_leds_error();
+
+    ESP_LOGE(
+        TAG_TASKS,
+        "TWAI entered terminal fault state: %s",
+        reason
+    );
+
+    /*
+     * The receive-drain task will remain paused while faulted.
+     *
+     * Bluetooth command processing can continue, but no verified CAN
+     * transmission should be considered available until the device
+     * is deliberately restarted or a future supervised
+     * reinitialization path is implemented.
+     */
+}
 
 // ------------------------------------------------------------
 // LOG CURRENT TWAI HEALTH STATUS
@@ -83,7 +182,8 @@ static void log_twai_status(
     ESP_LOGI(
         TAG_TASKS,
         "TWAI health during %s: "
-        "state=%d "
+        "software_state=%s "
+        "driver_state=%d "
         "tx_pending=%" PRIu32 " "
         "rx_pending=%" PRIu32 " "
         "tx_failed=%" PRIu32 " "
@@ -92,6 +192,9 @@ static void log_twai_status(
         "bus_errors=%" PRIu32 " "
         "arbitration_lost=%" PRIu32,
         context,
+        twai_health_name(
+            s_twai_health
+        ),
         status_info.state,
         status_info.msgs_to_tx,
         status_info.msgs_to_rx,
@@ -109,7 +212,7 @@ static void log_twai_status(
 
 static void initiate_bus_recovery(void)
 {
-    if (s_bus_recovery_active) {
+    if (twai_is_recovering()) {
         ESP_LOGW(
             TAG_TASKS,
             "TWAI bus recovery is already active"
@@ -118,8 +221,18 @@ static void initiate_bus_recovery(void)
         return;
     }
 
-    s_bus_recovery_active =
-        true;
+    if (twai_is_faulted()) {
+        ESP_LOGE(
+            TAG_TASKS,
+            "TWAI recovery rejected because controller is faulted"
+        );
+
+        return;
+    }
+
+    set_twai_health(
+        TWAI_HEALTH_RECOVERING
+    );
 
     singlecan_leds_error();
 
@@ -127,30 +240,53 @@ static void initiate_bus_recovery(void)
         "bus-off detection"
     );
 
-    const esp_err_t recovery_result =
-        twai_initiate_recovery();
-
-    if (
-        recovery_result !=
-        ESP_OK
+    for (
+        uint32_t attempt = 1;
+        attempt <=
+            CAN_RECOVERY_MAXIMUM_ATTEMPTS;
+        ++attempt
     ) {
+        const esp_err_t recovery_result =
+            twai_initiate_recovery();
+
+        if (
+            recovery_result ==
+            ESP_OK
+        ) {
+            ESP_LOGW(
+                TAG_TASKS,
+                "TWAI bus-off recovery initiated "
+                "on attempt %" PRIu32,
+                attempt
+            );
+
+            return;
+        }
+
         ESP_LOGE(
             TAG_TASKS,
-            "TWAI recovery initiation failed: %s",
+            "TWAI recovery initiation attempt "
+            "%" PRIu32 " failed: %s",
+            attempt,
             esp_err_to_name(
                 recovery_result
             )
         );
 
-        s_bus_recovery_active =
-            false;
-
-        return;
+        if (
+            attempt <
+            CAN_RECOVERY_MAXIMUM_ATTEMPTS
+        ) {
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    CAN_RECOVERY_RETRY_DELAY_MS
+                )
+            );
+        }
     }
 
-    ESP_LOGW(
-        TAG_TASKS,
-        "TWAI bus-off recovery initiated"
+    enter_twai_fault_state(
+        "recovery initiation exhausted all attempts"
     );
 }
 
@@ -160,26 +296,70 @@ static void initiate_bus_recovery(void)
 
 static void complete_bus_recovery(void)
 {
+    if (twai_is_faulted()) {
+        ESP_LOGE(
+            TAG_TASKS,
+            "TWAI recovery-complete alert ignored because " \
+            "controller is faulted"
+        );
+
+        return;
+    }
+
+    if (!twai_is_recovering()) {
+        ESP_LOGW(
+            TAG_TASKS,
+            "TWAI recovery-complete alert received without " \
+            "an active recovery state"
+        );
+    }
+
     ESP_LOGI(
         TAG_TASKS,
-        "TWAI bus recovery completed"
+        "TWAI bus recovery completed; restarting driver"
     );
 
     /*
      * After recovery completes, the legacy TWAI driver remains in
-     * the stopped state. Restart it before reception or any future
+     * the stopped state. Restart it before reception or future
      * verified transmission resumes.
      */
-    const esp_err_t start_result =
-        twai_start();
-
-    if (
-        start_result !=
-        ESP_OK
+    for (
+        uint32_t attempt = 1;
+        attempt <=
+            CAN_RECOVERY_MAXIMUM_ATTEMPTS;
+        ++attempt
     ) {
+        const esp_err_t start_result =
+            twai_start();
+
+        if (
+            start_result ==
+            ESP_OK
+        ) {
+            set_twai_health(
+                TWAI_HEALTH_RUNNING
+            );
+
+            ESP_LOGI(
+                TAG_TASKS,
+                "TWAI restarted after recovery " \
+                "on attempt %" PRIu32,
+                attempt
+            );
+
+            log_twai_status(
+                "successful recovery"
+            );
+
+            return;
+        }
+
         ESP_LOGE(
             TAG_TASKS,
-            "TWAI restart after recovery failed: %s",
+            "TWAI restart attempt %" PRIu32
+            " after recovery failed: %s",
+            attempt,
             esp_err_to_name(
                 start_result
             )
@@ -187,23 +367,20 @@ static void complete_bus_recovery(void)
 
         singlecan_leds_error();
 
-        /*
-         * Leave recovery marked active. The RX drain task must not
-         * treat a stopped controller as healthy.
-         */
-        return;
+        if (
+            attempt <
+            CAN_RECOVERY_MAXIMUM_ATTEMPTS
+        ) {
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    CAN_RECOVERY_RETRY_DELAY_MS
+                )
+            );
+        }
     }
 
-    s_bus_recovery_active =
-        false;
-
-    ESP_LOGI(
-        TAG_TASKS,
-        "TWAI restarted after bus-off recovery"
-    );
-
-    log_twai_status(
-        "successful recovery"
+    enter_twai_fault_state(
+        "TWAI restart exhausted all attempts"
     );
 }
 
@@ -345,7 +522,9 @@ static void can_health_task(
             )
         );
 
-        singlecan_leds_error();
+        enter_twai_fault_state(
+            "TWAI alert configuration failed"
+        );
 
         s_can_health_task_handle =
             NULL;
@@ -356,6 +535,10 @@ static void can_health_task(
 
         return;
     }
+
+    set_twai_health(
+        TWAI_HEALTH_RUNNING
+    );
 
     ESP_LOGI(
         TAG_TASKS,
@@ -387,10 +570,32 @@ static void can_health_task(
             read_result ==
             ESP_ERR_INVALID_STATE
         ) {
-            ESP_LOGW(
-                TAG_TASKS,
-                "TWAI alert monitor waiting for active driver"
-            );
+            if (twai_is_recovering()) {
+                ESP_LOGW(
+                    TAG_TASKS,
+                    "TWAI alert monitor waiting during recovery"
+                );
+            } else if (twai_is_faulted()) {
+                ESP_LOGE(
+                    TAG_TASKS,
+                    "TWAI alert monitor stopped by terminal fault"
+                );
+
+                vTaskDelay(
+                    pdMS_TO_TICKS(
+                        CAN_ERROR_DELAY_MS
+                    )
+                );
+            } else {
+                ESP_LOGE(
+                    TAG_TASKS,
+                    "TWAI alert monitor lost active driver state"
+                );
+
+                enter_twai_fault_state(
+                    "TWAI alert driver became unavailable"
+                );
+            }
         } else {
             ESP_LOGE(
                 TAG_TASKS,
@@ -429,7 +634,7 @@ static void can_rx_drain_task(
     twai_message_t message;
 
     while (true) {
-        if (s_bus_recovery_active) {
+        if (!twai_is_running()) {
             vTaskDelay(
                 pdMS_TO_TICKS(
                     CAN_ERROR_DELAY_MS
@@ -460,7 +665,7 @@ static void can_rx_drain_task(
         if (
             receive_result ==
                 ESP_ERR_INVALID_STATE &&
-            s_bus_recovery_active
+            !twai_is_running()
         ) {
             vTaskDelay(
                 pdMS_TO_TICKS(
@@ -497,7 +702,7 @@ static void can_rx_drain_task(
          *
          * PCAN hardware and PCAN-Explorer 7 own vehicle-bus capture
          * and decoding. SingleCAN does not log, serialize, queue, or
-         * transmit this raw received frame over Bluetooth.
+         * transmit this raw received frame through Bluetooth.
          */
     }
 }
@@ -522,6 +727,10 @@ void start_can_rx_task(void)
         return;
     }
 
+    set_twai_health(
+        TWAI_HEALTH_STARTING
+    );
+
     const BaseType_t health_task_result =
         xTaskCreate(
             can_health_task,
@@ -544,7 +753,9 @@ void start_can_rx_task(void)
         s_can_health_task_handle =
             NULL;
 
-        led_set_red();
+        enter_twai_fault_state(
+            "TWAI health task creation failed"
+        );
 
         return;
     }
@@ -583,7 +794,9 @@ void start_can_rx_task(void)
         s_can_rx_task_handle =
             NULL;
 
-        led_set_red();
+        enter_twai_fault_state(
+            "TWAI receive-drain task creation failed"
+        );
 
         return;
     }
