@@ -3,6 +3,8 @@
 
 #include "unity.h"
 
+#include <stdio.h>
+
 static void test_valid_single_module_configuration(void)
 {
     protocol_test_doubles_reset();
@@ -601,6 +603,90 @@ static void test_session_reset_allows_request_ids_to_restart(void)
     );
 }
 
+
+static void test_per_session_rate_limit_drops_excess_packet(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    /*
+     * The configuration packet consumes one of the 20 allowed
+     * requests. IDs 2 through 20 consume the remaining 19.
+     */
+    for (
+        int packet_id = 2;
+        packet_id <= 20;
+        ++packet_id
+    ) {
+        char packet[128];
+
+        snprintf(
+            packet,
+            sizeof(packet),
+            "{\"id\":%d,\"type\":\"command\","
+            "\"command\":\"LOCK_DOORS\"}",
+            packet_id
+        );
+
+        singlecan_commands_process(
+            packet
+        );
+    }
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        20,
+        response->call_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        19,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        20,
+        response->packet_id
+    );
+
+    /*
+     * Packet 21 exceeds the current per-session rate window.
+     * It must produce neither a response nor another dispatch.
+     */
+    singlecan_commands_process(
+        "{\"id\":21,\"type\":\"command\","
+        "\"command\":\"UNLOCK_DOORS\"}"
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        20,
+        response->call_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        19,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        20,
+        response->packet_id
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "LOCK_DOORS",
+        protocol_test_dispatched_command()
+    );
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -719,6 +805,11 @@ void app_main(void)
 
     RUN_TEST(
         test_session_reset_allows_request_ids_to_restart
+    );
+
+
+    RUN_TEST(
+        test_per_session_rate_limit_drops_excess_packet
     );
 
     UNITY_END();
