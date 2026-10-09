@@ -473,6 +473,134 @@ static void test_duplicate_request_id_is_rejected(void)
     );
 }
 
+
+static void test_out_of_order_request_id_is_rejected(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":10,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    singlecan_commands_process(
+        "{\"id\":9,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        9,
+        response->packet_id
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "error",
+        response->status
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "duplicate_request_id",
+        response->reason
+    );
+}
+
+static void test_session_reset_clears_configuration(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":10,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        singlecan_commands_is_configured()
+    );
+
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        singlecan_commands_is_configured()
+    );
+
+    singlecan_commands_process(
+        "{\"id\":11,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "module_not_configured",
+        response->reason
+    );
+}
+
+static void test_session_reset_allows_request_ids_to_restart(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":10,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        singlecan_commands_is_configured()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        response->call_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        response->packet_id
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        response->status
+    );
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -578,6 +706,19 @@ void app_main(void)
 
     RUN_TEST(
         test_duplicate_request_id_is_rejected
+    );
+
+
+    RUN_TEST(
+        test_out_of_order_request_id_is_rejected
+    );
+
+    RUN_TEST(
+        test_session_reset_clears_configuration
+    );
+
+    RUN_TEST(
+        test_session_reset_allows_request_ids_to_restart
     );
 
     UNITY_END();
