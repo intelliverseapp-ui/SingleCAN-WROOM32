@@ -222,6 +222,117 @@ static void test_escaped_nul_is_rejected(void)
     );
 }
 
+
+static void test_vehicle_command_before_configuration_is_blocked(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(0, singlecan_commands_is_configured());
+    TEST_ASSERT_EQUAL_INT(1, response->call_count);
+    TEST_ASSERT_EQUAL_STRING("error", response->status);
+    TEST_ASSERT_EQUAL_STRING(
+        "module_not_configured",
+        response->reason
+    );
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        protocol_test_dispatch_call_count()
+    );
+}
+
+static void test_dual_module_configuration_is_rejected(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"dual\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(0, singlecan_commands_is_configured());
+    TEST_ASSERT_EQUAL_INT(1, response->call_count);
+    TEST_ASSERT_EQUAL_STRING("error", response->status);
+    TEST_ASSERT_EQUAL_STRING(
+        "dual_module_not_supported",
+        response->reason
+    );
+}
+
+static void test_unknown_module_configuration_is_rejected(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"unknown\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(0, singlecan_commands_is_configured());
+    TEST_ASSERT_EQUAL_STRING("error", response->status);
+    TEST_ASSERT_EQUAL_STRING("invalid_module", response->reason);
+}
+
+static void test_config_missing_value_returns_error(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(1, response->call_count);
+    TEST_ASSERT_EQUAL_STRING("error", response->status);
+    TEST_ASSERT_EQUAL_STRING("missing_value", response->reason);
+    TEST_ASSERT_EQUAL_INT(0, singlecan_commands_is_configured());
+}
+
+static void test_vehicle_command_with_value_returns_error(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\","
+        "\"value\":\"unsafe\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(1, response->call_count);
+    TEST_ASSERT_EQUAL_STRING("error", response->status);
+    TEST_ASSERT_EQUAL_STRING("unexpected_value", response->reason);
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        protocol_test_dispatch_call_count()
+    );
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -293,6 +404,27 @@ void app_main(void)
 
     RUN_TEST(
         test_escaped_nul_is_rejected
+    );
+
+
+    RUN_TEST(
+        test_vehicle_command_before_configuration_is_blocked
+    );
+
+    RUN_TEST(
+        test_dual_module_configuration_is_rejected
+    );
+
+    RUN_TEST(
+        test_unknown_module_configuration_is_rejected
+    );
+
+    RUN_TEST(
+        test_config_missing_value_returns_error
+    );
+
+    RUN_TEST(
+        test_vehicle_command_with_value_returns_error
     );
 
     UNITY_END();
