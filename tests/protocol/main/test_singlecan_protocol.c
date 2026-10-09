@@ -333,6 +333,146 @@ static void test_vehicle_command_with_value_returns_error(void)
     );
 }
 
+
+static void test_recognized_command_dispatches_after_configuration(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    singlecan_commands_process(
+        "{\"id\":2,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        singlecan_commands_is_configured()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "LOCK_DOORS",
+        protocol_test_dispatched_command()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        2,
+        response->packet_id
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "unsupported",
+        response->status
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "not_implemented",
+        response->reason
+    );
+}
+
+static void test_unknown_command_returns_unknown_command(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    protocol_test_set_dispatch_result(
+        SINGLECAN_COMMAND_DISPATCH_UNSUPPORTED
+    );
+
+    singlecan_commands_process(
+        "{\"id\":2,\"type\":\"command\","
+        "\"command\":\"UNKNOWN_COMMAND\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "UNKNOWN_COMMAND",
+        protocol_test_dispatched_command()
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "unsupported",
+        response->status
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "unknown_command",
+        response->reason
+    );
+}
+
+static void test_duplicate_request_id_is_rejected(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"config.module\","
+        "\"value\":\"single\"}"
+    );
+
+    singlecan_commands_process(
+        "{\"id\":2,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+
+    singlecan_commands_process(
+        "{\"id\":2,\"type\":\"command\","
+        "\"command\":\"UNLOCK_DOORS\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        protocol_test_dispatch_call_count()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        2,
+        response->packet_id
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "error",
+        response->status
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "duplicate_request_id",
+        response->reason
+    );
+}
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -425,6 +565,19 @@ void app_main(void)
 
     RUN_TEST(
         test_vehicle_command_with_value_returns_error
+    );
+
+
+    RUN_TEST(
+        test_recognized_command_dispatches_after_configuration
+    );
+
+    RUN_TEST(
+        test_unknown_command_returns_unknown_command
+    );
+
+    RUN_TEST(
+        test_duplicate_request_id_is_rejected
     );
 
     UNITY_END();
