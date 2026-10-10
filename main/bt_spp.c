@@ -579,7 +579,7 @@ static void spp_event_handler(
 
         const int peer_is_trusted =
             connection_is_valid &&
-            bt_peer_authorization_is_trusted(
+            bt_peer_authorization_is_explicitly_trusted(
                 param->srv_open.rem_bda
             );
 
