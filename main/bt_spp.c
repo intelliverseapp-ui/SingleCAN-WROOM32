@@ -12,9 +12,11 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #include "bt_peer_authorization.h"
 #include "bt_spp.h"
+#include "bt_spp_coordinator_test.h"
 #include "bt_spp_framer.h"
 #include "bt_spp_rejected_client.h"
 #include "bt_spp_session.h"
@@ -31,6 +33,9 @@ static const char *BT_DEVICE_NAME =
 #define BT_SPP_READINESS_EVENT_FAILED BIT1
 
 static EventGroupHandle_t s_readiness_events =
+    NULL;
+
+static SemaphoreHandle_t s_session_lifecycle_mutex =
     NULL;
 
 static portMUX_TYPE s_state_lock =
@@ -219,6 +224,171 @@ static esp_err_t bt_spp_create_readiness_events(void)
 }
 
 // ------------------------------------------------------------
+// SESSION LIFECYCLE SERIALIZATION
+// ------------------------------------------------------------
+
+static int bt_spp_lock_session_lifecycle(void)
+{
+    if (
+        s_session_lifecycle_mutex ==
+        NULL
+    ) {
+        ESP_LOGE(
+            TAG,
+            "SPP session lifecycle mutex is not initialized"
+        );
+
+        return 0;
+    }
+
+    return xSemaphoreTake(
+        s_session_lifecycle_mutex,
+        portMAX_DELAY
+    ) == pdTRUE;
+}
+
+static void bt_spp_unlock_session_lifecycle(void)
+{
+    if (
+        s_session_lifecycle_mutex !=
+        NULL
+    ) {
+        xSemaphoreGive(
+            s_session_lifecycle_mutex
+        );
+    }
+}
+
+
+// ------------------------------------------------------------
+// SERIALIZED SESSION LIFECYCLE TRANSITIONS
+// ------------------------------------------------------------
+
+#ifdef SINGLECAN_SPP_COORDINATOR_TEST
+#define BT_SPP_COORDINATOR_LOCAL
+#else
+#define BT_SPP_COORDINATOR_LOCAL static
+#endif
+
+BT_SPP_COORDINATOR_LOCAL esp_err_t bt_spp_session_lifecycle_init(void)
+{
+    if (
+        s_session_lifecycle_mutex ==
+        NULL
+    ) {
+        s_session_lifecycle_mutex =
+            xSemaphoreCreateMutex();
+
+        if (
+            s_session_lifecycle_mutex ==
+            NULL
+        ) {
+            ESP_LOGE(
+                TAG,
+                "Failed to create SPP session lifecycle mutex"
+            );
+
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    bt_spp_session_init();
+
+    return ESP_OK;
+}
+
+BT_SPP_COORDINATOR_LOCAL int bt_spp_accept_session_transition(
+    uint32_t handle,
+    uint32_t *session_id
+)
+{
+    if (
+        !bt_spp_lock_session_lifecycle()
+    ) {
+        return 0;
+    }
+
+    const int accepted =
+        bt_spp_session_accept(
+            handle,
+            session_id
+        );
+
+    if (accepted) {
+        singlecan_commands_reset_session();
+
+        bt_spp_framer_reset();
+
+        bt_spp_writer_on_connected();
+    }
+
+    bt_spp_unlock_session_lifecycle();
+
+    return accepted;
+}
+
+BT_SPP_COORDINATOR_LOCAL int bt_spp_close_session_transition(
+    uint32_t handle
+)
+{
+    if (
+        !bt_spp_lock_session_lifecycle()
+    ) {
+        return 0;
+    }
+
+    const int closed =
+        bt_spp_session_close(
+            handle
+        );
+
+    if (closed) {
+        singlecan_commands_reset_session();
+
+        bt_spp_framer_reset();
+
+        bt_spp_writer_on_disconnected();
+    }
+
+    bt_spp_unlock_session_lifecycle();
+
+    return closed;
+}
+
+BT_SPP_COORDINATOR_LOCAL int bt_spp_force_close_session_transition(
+    uint32_t handle,
+    uint32_t session_id
+)
+{
+    if (
+        !bt_spp_lock_session_lifecycle()
+    ) {
+        return 0;
+    }
+
+    const int closed =
+        bt_spp_session_force_close_if_matches(
+            handle,
+            session_id
+        );
+
+    if (closed) {
+        singlecan_commands_reset_session();
+
+        bt_spp_framer_reset();
+
+        bt_spp_writer_on_disconnected();
+    }
+
+    bt_spp_unlock_session_lifecycle();
+
+    return closed;
+}
+
+#undef BT_SPP_COORDINATOR_LOCAL
+
+
+// ------------------------------------------------------------
 // EXTRACTED SESSION AND WRITER BRIDGE
 // ------------------------------------------------------------
 
@@ -264,17 +434,11 @@ static void bt_spp_disconnect_writer_session(
          * can be submitted to the failed session.
          */
         if (
-            bt_spp_session_force_close_if_matches(
+            !bt_spp_force_close_session_transition(
                 handle,
                 session_id
             )
         ) {
-            singlecan_commands_reset_session();
-
-            bt_spp_framer_reset();
-
-            bt_spp_writer_on_disconnected();
-        } else {
             ESP_LOGW(
                 TAG,
                 "Ignoring stale writer force-close request"
@@ -287,19 +451,9 @@ static void bt_spp_complete_active_session_close(
     uint32_t handle
 )
 {
-    if (
-        !bt_spp_session_close(
-            handle
-        )
-    ) {
-        return;
-    }
-
-    singlecan_commands_reset_session();
-
-    bt_spp_framer_reset();
-
-    bt_spp_writer_on_disconnected();
+    (void)bt_spp_close_session_transition(
+        handle
+    );
 }
 
 // ------------------------------------------------------------
@@ -587,12 +741,16 @@ static void spp_event_handler(
                 param->srv_open.rem_bda
             );
 
-        const int connection_accepted =
-            peer_is_trusted &&
-            bt_spp_session_accept(
-                new_handle,
-                &accepted_session_id
-            );
+        int connection_accepted =
+            0;
+
+        if (peer_is_trusted) {
+            connection_accepted =
+                bt_spp_accept_session_transition(
+                    new_handle,
+                    &accepted_session_id
+                );
+        }
 
         if (!connection_accepted) {
             ESP_LOGW(
@@ -608,12 +766,6 @@ static void spp_event_handler(
 
             break;
         }
-
-        singlecan_commands_reset_session();
-
-        bt_spp_framer_reset();
-
-        bt_spp_writer_on_connected();
 
         ESP_LOGI(
             TAG,
@@ -779,7 +931,15 @@ esp_err_t bt_spp_init(void)
 
     singlecan_commands_reset_session();
 
-    bt_spp_session_init();
+    const esp_err_t lifecycle_result =
+        bt_spp_session_lifecycle_init();
+
+    if (
+        lifecycle_result !=
+        ESP_OK
+    ) {
+        return lifecycle_result;
+    }
 
     const esp_err_t rejected_client_result =
         bt_spp_rejected_client_init(
