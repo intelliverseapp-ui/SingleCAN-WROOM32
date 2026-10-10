@@ -1,0 +1,169 @@
+#include "bt_peer_authorization.h"
+
+#include "esp_gap_bt_api.h"
+#include "esp_log.h"
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const char *TAG =
+    "BT_PEER_AUTH";
+
+static int address_is_zero(
+    const esp_bd_addr_t address
+)
+{
+    if (address == NULL) {
+        return 1;
+    }
+
+    static const esp_bd_addr_t zero_address = {
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    };
+
+    return memcmp(
+        address,
+        zero_address,
+        sizeof(esp_bd_addr_t)
+    ) == 0;
+}
+
+esp_err_t bt_peer_authorization_init(void)
+{
+    const int bonded_device_count =
+        esp_bt_gap_get_bond_device_num();
+
+    if (bonded_device_count < 0) {
+        ESP_LOGE(
+            TAG,
+            "Unable to query the Bluetooth bonded-device database"
+        );
+
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Bluetooth trusted-peer store ready; bonded devices=%d",
+        bonded_device_count
+    );
+
+    return ESP_OK;
+}
+
+int bt_peer_authorization_is_trusted(
+    const esp_bd_addr_t peer_address
+)
+{
+    if (
+        peer_address == NULL ||
+        address_is_zero(
+            peer_address
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Peer authorization rejected an invalid address"
+        );
+
+        return 0;
+    }
+
+    int bonded_device_count =
+        esp_bt_gap_get_bond_device_num();
+
+    if (bonded_device_count <= 0) {
+        ESP_LOGW(
+            TAG,
+            "Peer authorization denied; no trusted bonded devices"
+        );
+
+        return 0;
+    }
+
+    esp_bd_addr_t *bonded_devices =
+        calloc(
+            (size_t)bonded_device_count,
+            sizeof(esp_bd_addr_t)
+        );
+
+    if (bonded_devices == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Peer authorization failed to allocate bond-list storage"
+        );
+
+        return 0;
+    }
+
+    int returned_device_count =
+        bonded_device_count;
+
+    const esp_err_t list_result =
+        esp_bt_gap_get_bond_device_list(
+            &returned_device_count,
+            bonded_devices
+        );
+
+    if (
+        list_result != ESP_OK ||
+        returned_device_count < 0 ||
+        returned_device_count >
+            bonded_device_count
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Peer authorization could not read the bond list: %s",
+            esp_err_to_name(
+                list_result
+            )
+        );
+
+        free(
+            bonded_devices
+        );
+
+        return 0;
+    }
+
+    int trusted =
+        0;
+
+    for (
+        int index = 0;
+        index < returned_device_count;
+        ++index
+    ) {
+        if (
+            memcmp(
+                peer_address,
+                bonded_devices[index],
+                sizeof(esp_bd_addr_t)
+            ) == 0
+        ) {
+            trusted =
+                1;
+
+            break;
+        }
+    }
+
+    free(
+        bonded_devices
+    );
+
+    if (!trusted) {
+        ESP_LOGW(
+            TAG,
+            "Peer authorization denied an untrusted Bluetooth address"
+        );
+    }
+
+    return trusted;
+}

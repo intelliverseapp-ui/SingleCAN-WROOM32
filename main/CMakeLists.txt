@@ -12,6 +12,7 @@ idf_component_register(
         "bt_spp_framer.c"
         "bt_spp_writer.c"
         "bt_spp_session.c"
+        "bt_peer_authorization.c"
 
     INCLUDE_DIRS
         "."
