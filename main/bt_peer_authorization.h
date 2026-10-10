@@ -31,6 +31,25 @@ int bt_peer_authorization_is_trusted(
     const esp_bd_addr_t peer_address
 );
 
+/**
+ * Loads the explicitly trusted Bluetooth address from NVS.
+ *
+ * Returns ESP_OK only when one valid six-byte address is loaded.
+ * Returns ESP_ERR_NVS_NOT_FOUND when no address has been stored.
+ */
+esp_err_t bt_peer_authorization_load_trusted_address(
+    esp_bd_addr_t trusted_address
+);
+
+/**
+ * Stores one explicitly trusted Bluetooth address in NVS.
+ *
+ * The address is committed before this function returns ESP_OK.
+ */
+esp_err_t bt_peer_authorization_store_trusted_address(
+    const esp_bd_addr_t trusted_address
+);
+
 #ifdef __cplusplus
 }
 #endif

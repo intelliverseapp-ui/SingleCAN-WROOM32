@@ -596,6 +596,312 @@ static void test_bond_list_query_error_fails_closed(void)
     );
 }
 
+static void test_load_rejects_null_destination(void)
+{
+    reset_bond_database();
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_load_trusted_address(
+            NULL
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_get_blob_count
+    );
+}
+
+static void test_load_reports_missing_trusted_address(void)
+{
+    reset_bond_database();
+
+    esp_bd_addr_t loaded_address = {
+        0
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_NVS_NOT_FOUND,
+        bt_peer_authorization_load_trusted_address(
+            loaded_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL(
+        NVS_READONLY,
+        s_last_nvs_open_mode
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_close_count
+    );
+}
+
+static void test_load_returns_exact_stored_address(void)
+{
+    reset_bond_database();
+
+    const esp_bd_addr_t stored_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        stored_address
+    );
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    s_nvs_blob_length =
+        sizeof(esp_bd_addr_t);
+
+    esp_bd_addr_t loaded_address = {
+        0
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_peer_authorization_load_trusted_address(
+            loaded_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        stored_address,
+        loaded_address,
+        sizeof(esp_bd_addr_t)
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_close_count
+    );
+}
+
+static void test_load_rejects_wrong_sized_address(void)
+{
+    reset_bond_database();
+
+    const esp_bd_addr_t stored_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        stored_address
+    );
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    s_nvs_blob_length =
+        sizeof(esp_bd_addr_t) - 1;
+
+    esp_bd_addr_t loaded_address = {
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff
+    };
+
+    const esp_bd_addr_t zero_address = {
+        0
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_SIZE,
+        bt_peer_authorization_load_trusted_address(
+            loaded_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        zero_address,
+        loaded_address,
+        sizeof(esp_bd_addr_t)
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_close_count
+    );
+}
+
+static void test_store_rejects_invalid_addresses(void)
+{
+    reset_bond_database();
+
+    const esp_bd_addr_t zero_address = {
+        0
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_store_trusted_address(
+            NULL
+        )
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_store_trusted_address(
+            zero_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_commit_count
+    );
+}
+
+static void test_store_commits_exact_trusted_address(void)
+{
+    reset_bond_database();
+
+    const esp_bd_addr_t trusted_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_peer_authorization_store_trusted_address(
+            trusted_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL(
+        NVS_READWRITE,
+        s_last_nvs_open_mode
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_commit_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_close_count
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        trusted_address,
+        s_nvs_trusted_address,
+        sizeof(esp_bd_addr_t)
+    );
+}
+
+static void test_store_failure_skips_commit_and_closes_handle(void)
+{
+    reset_bond_database();
+
+    s_nvs_set_blob_result =
+        ESP_FAIL;
+
+    const esp_bd_addr_t trusted_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_FAIL,
+        bt_peer_authorization_store_trusted_address(
+            trusted_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_commit_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_close_count
+    );
+}
+
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -626,6 +932,34 @@ void app_main(void)
 
     RUN_TEST(
         test_bond_list_query_error_fails_closed
+    );
+
+    RUN_TEST(
+        test_load_rejects_null_destination
+    );
+
+    RUN_TEST(
+        test_load_reports_missing_trusted_address
+    );
+
+    RUN_TEST(
+        test_load_returns_exact_stored_address
+    );
+
+    RUN_TEST(
+        test_load_rejects_wrong_sized_address
+    );
+
+    RUN_TEST(
+        test_store_rejects_invalid_addresses
+    );
+
+    RUN_TEST(
+        test_store_commits_exact_trusted_address
+    );
+
+    RUN_TEST(
+        test_store_failure_skips_commit_and_closes_handle
     );
 
     UNITY_END();
