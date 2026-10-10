@@ -26,6 +26,11 @@ int bt_spp_force_close_session_transition(
     uint32_t session_id
 );
 
+int bt_spp_disconnect_rejected_client(
+    uint32_t handle,
+    esp_err_t *result
+);
+
 #endif
 
 #ifdef __cplusplus

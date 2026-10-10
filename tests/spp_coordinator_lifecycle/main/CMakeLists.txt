@@ -19,3 +19,9 @@ target_compile_definitions(
     PRIVATE
         SINGLECAN_SPP_COORDINATOR_TEST=1
 )
+
+target_link_options(
+    ${COMPONENT_LIB}
+    INTERFACE
+        "-Wl,--wrap=esp_spp_disconnect"
+)

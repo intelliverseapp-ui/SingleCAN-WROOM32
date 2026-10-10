@@ -8,23 +8,25 @@
 extern "C" {
 #endif
 
-typedef esp_err_t (*bt_spp_rejected_client_disconnect_t)(
-    uint32_t handle
-);
-
-typedef uint32_t (*bt_spp_rejected_client_active_handle_t)(
-    void
+typedef int (*bt_spp_rejected_client_disconnect_t)(
+    uint32_t handle,
+    esp_err_t *result
 );
 
 /**
 * Initializes bounded rejected-client disconnect recovery.
 *
-* disconnect_callback performs the stack disconnect request.
-* active_handle_callback returns the authorized active-session handle.
+* disconnect_callback atomically protects authorized-session
+* ownership and conditionally performs the stack disconnect request.
+*
+* The callback returns nonzero when a disconnect request was issued
+* and stores its ESP-IDF result through result.
+*
+* The callback returns zero when the handle is protected and must not
+* be disconnected.
 */
 esp_err_t bt_spp_rejected_client_init(
-    bt_spp_rejected_client_disconnect_t disconnect_callback,
-    bt_spp_rejected_client_active_handle_t active_handle_callback
+    bt_spp_rejected_client_disconnect_t disconnect_callback
 );
 
 /**

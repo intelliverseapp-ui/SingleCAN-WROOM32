@@ -141,11 +141,16 @@ static void set_disconnect_behavior(
     );
 }
 
-static esp_err_t observe_disconnect(
-    uint32_t handle
+static int observe_disconnect(
+    uint32_t handle,
+    esp_err_t *result
 )
 {
-    esp_err_t result =
+    if (result == NULL) {
+        return 0;
+    }
+
+    *result =
         ESP_OK;
 
     portENTER_CRITICAL(
@@ -171,7 +176,7 @@ static esp_err_t observe_disconnect(
         s_disconnect_count <=
             s_failures_before_success
     ) {
-        result =
+        *result =
             ESP_FAIL;
     }
 
@@ -179,7 +184,7 @@ static esp_err_t observe_disconnect(
         &s_test_lock
     );
 
-    return result;
+    return 1;
 }
 
 static uint32_t provide_active_handle(void)
@@ -198,6 +203,25 @@ static uint32_t provide_active_handle(void)
     );
 
     return handle;
+}
+
+static int observe_guarded_disconnect(
+    uint32_t handle,
+    esp_err_t *result
+)
+{
+    if (
+        result == NULL ||
+        handle ==
+            provide_active_handle()
+    ) {
+        return 0;
+    }
+
+    return observe_disconnect(
+        handle,
+        result
+    );
 }
 
 static int wait_for_disconnect_count(
@@ -507,15 +531,6 @@ void app_main(void)
     TEST_ASSERT_EQUAL(
         ESP_ERR_INVALID_ARG,
         bt_spp_rejected_client_init(
-            NULL,
-            provide_active_handle
-        )
-    );
-
-    TEST_ASSERT_EQUAL(
-        ESP_ERR_INVALID_ARG,
-        bt_spp_rejected_client_init(
-            observe_disconnect,
             NULL
         )
     );
@@ -523,16 +538,14 @@ void app_main(void)
     TEST_ASSERT_EQUAL(
         ESP_OK,
         bt_spp_rejected_client_init(
-            observe_disconnect,
-            provide_active_handle
+            observe_guarded_disconnect
         )
     );
 
     TEST_ASSERT_EQUAL(
         ESP_ERR_INVALID_STATE,
         bt_spp_rejected_client_init(
-            observe_disconnect,
-            provide_active_handle
+            observe_guarded_disconnect
         )
     );
 

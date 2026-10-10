@@ -385,12 +385,45 @@ BT_SPP_COORDINATOR_LOCAL int bt_spp_force_close_session_transition(
     return closed;
 }
 
-#undef BT_SPP_COORDINATOR_LOCAL
-
 
 // ------------------------------------------------------------
 // EXTRACTED SESSION AND WRITER BRIDGE
 // ------------------------------------------------------------
+
+BT_SPP_COORDINATOR_LOCAL int bt_spp_disconnect_rejected_client(
+    uint32_t handle,
+    esp_err_t *result
+)
+{
+    if (
+        handle == 0 ||
+        result == NULL ||
+        !bt_spp_lock_session_lifecycle()
+    ) {
+        return 0;
+    }
+
+    if (
+        bt_spp_session_handle_is_active(
+            handle
+        )
+    ) {
+        bt_spp_unlock_session_lifecycle();
+
+        return 0;
+    }
+
+    *result =
+        esp_spp_disconnect(
+            handle
+        );
+
+    bt_spp_unlock_session_lifecycle();
+
+    return 1;
+}
+
+#undef BT_SPP_COORDINATOR_LOCAL
 
 static void bt_spp_disconnect_writer_session(
     uint32_t handle,
@@ -943,8 +976,7 @@ esp_err_t bt_spp_init(void)
 
     const esp_err_t rejected_client_result =
         bt_spp_rejected_client_init(
-            esp_spp_disconnect,
-            bt_spp_session_get_handle
+            bt_spp_disconnect_rejected_client
         );
 
     if (

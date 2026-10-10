@@ -44,9 +44,6 @@ static TaskHandle_t s_retry_task =
 static bt_spp_rejected_client_disconnect_t s_disconnect_callback =
     NULL;
 
-static bt_spp_rejected_client_active_handle_t s_active_handle_callback =
-    NULL;
-
 static portMUX_TYPE s_rejected_lock =
     portMUX_INITIALIZER_UNLOCKED;
 
@@ -212,20 +209,6 @@ static uint32_t begin_tracking(
     return token;
 }
 
-static int handle_became_authorized(
-    uint32_t handle
-)
-{
-    if (s_active_handle_callback == NULL) {
-        return 0;
-    }
-
-    return
-        handle != 0 &&
-        s_active_handle_callback() ==
-            handle;
-}
-
 static int queue_retry(
     uint32_t handle,
     uint32_t token,
@@ -288,15 +271,20 @@ static void rejected_client_retry_task(
             continue;
         }
 
-        if (
-            handle_became_authorized(
-                work.handle
-            )
-        ) {
+        esp_err_t result =
+            ESP_ERR_INVALID_STATE;
+
+        const int disconnect_issued =
+            s_disconnect_callback(
+                work.handle,
+                &result
+            );
+
+        if (!disconnect_issued) {
             ESP_LOGW(
                 TAG,
                 "Canceling rejected-client retry because "
-                "handle became active, handle=%" PRIu32,
+                "the handle is protected, handle=%" PRIu32,
                 work.handle
             );
 
@@ -307,11 +295,6 @@ static void rejected_client_retry_task(
 
             continue;
         }
-
-        const esp_err_t result =
-            s_disconnect_callback(
-                work.handle
-            );
 
         if (result == ESP_OK) {
             ESP_LOGI(
@@ -372,14 +355,10 @@ static void rejected_client_retry_task(
 }
 
 esp_err_t bt_spp_rejected_client_init(
-    bt_spp_rejected_client_disconnect_t disconnect_callback,
-    bt_spp_rejected_client_active_handle_t active_handle_callback
+    bt_spp_rejected_client_disconnect_t disconnect_callback
 )
 {
-    if (
-        disconnect_callback == NULL ||
-        active_handle_callback == NULL
-    ) {
+    if (disconnect_callback == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -402,9 +381,6 @@ esp_err_t bt_spp_rejected_client_init(
     s_disconnect_callback =
         disconnect_callback;
 
-    s_active_handle_callback =
-        active_handle_callback;
-
     s_retry_queue =
         xQueueCreate(
             BT_SPP_REJECTED_QUEUE_LENGTH,
@@ -413,9 +389,6 @@ esp_err_t bt_spp_rejected_client_init(
 
     if (s_retry_queue == NULL) {
         s_disconnect_callback =
-            NULL;
-
-        s_active_handle_callback =
             NULL;
 
         return ESP_ERR_NO_MEM;
@@ -445,9 +418,6 @@ esp_err_t bt_spp_rejected_client_init(
         s_disconnect_callback =
             NULL;
 
-        s_active_handle_callback =
-            NULL;
-
         return ESP_ERR_NO_MEM;
     }
 
@@ -466,7 +436,6 @@ void bt_spp_rejected_client_reject(
     if (
         handle == 0 ||
         s_disconnect_callback == NULL ||
-        s_active_handle_callback == NULL ||
         s_retry_queue == NULL
     ) {
         ESP_LOGE(
@@ -477,25 +446,25 @@ void bt_spp_rejected_client_reject(
         return;
     }
 
-    if (
-        handle_became_authorized(
-            handle
-        )
-    ) {
+    esp_err_t result =
+        ESP_ERR_INVALID_STATE;
+
+    const int disconnect_issued =
+        s_disconnect_callback(
+            handle,
+            &result
+        );
+
+    if (!disconnect_issued) {
         ESP_LOGW(
             TAG,
-            "Refusing to disconnect active authorized handle, "
+            "Refusing to disconnect protected handle, "
             "handle=%" PRIu32,
             handle
         );
 
         return;
     }
-
-    const esp_err_t result =
-        s_disconnect_callback(
-            handle
-        );
 
     if (result == ESP_OK) {
         return;

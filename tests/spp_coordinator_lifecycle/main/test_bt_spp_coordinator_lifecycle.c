@@ -17,6 +17,10 @@
 #define TEST_EVENT_FORCE_CLOSE_DONE BIT2
 #define TEST_EVENT_ACCEPT_STARTED BIT3
 #define TEST_EVENT_ACCEPT_DONE BIT4
+#define TEST_EVENT_DISCONNECT_ENTERED BIT5
+#define TEST_EVENT_RELEASE_DISCONNECT BIT6
+#define TEST_EVENT_GUARDED_DISCONNECT_DONE BIT7
+#define TEST_EVENT_REPLACEMENT_ACCEPT_DONE BIT8
 
 #define TEST_TASK_STACK_SIZE 4096
 #define TEST_TASK_PRIORITY 5
@@ -35,6 +39,12 @@ typedef struct {
     uint32_t session_id;
     int result;
 } accept_task_context_t;
+
+typedef struct {
+    uint32_t handle;
+    esp_err_t disconnect_result;
+    int issued;
+} guarded_disconnect_task_context_t;
 
 static EventGroupHandle_t s_test_events =
     NULL;
@@ -64,6 +74,12 @@ static uint32_t s_writer_connected_sequence =
     0;
 
 static uint32_t s_writer_disconnected_sequence =
+    0;
+
+static uint32_t s_disconnect_call_count =
+    0;
+
+static uint32_t s_disconnect_handle =
     0;
 
 static void reset_observation(void)
@@ -96,6 +112,12 @@ static void reset_observation(void)
     s_writer_disconnected_sequence =
         0;
 
+    s_disconnect_call_count =
+        0;
+
+    s_disconnect_handle =
+        0;
+
     portEXIT_CRITICAL(
         &s_observation_lock
     );
@@ -106,7 +128,11 @@ static void reset_observation(void)
             TEST_EVENT_RELEASE_RESET |
             TEST_EVENT_FORCE_CLOSE_DONE |
             TEST_EVENT_ACCEPT_STARTED |
-            TEST_EVENT_ACCEPT_DONE
+            TEST_EVENT_ACCEPT_DONE |
+            TEST_EVENT_DISCONNECT_ENTERED |
+            TEST_EVENT_RELEASE_DISCONNECT |
+            TEST_EVENT_GUARDED_DISCONNECT_DONE |
+            TEST_EVENT_REPLACEMENT_ACCEPT_DONE
     );
 }
 
@@ -142,6 +168,40 @@ static void arm_blocking_command_reset(void)
     portEXIT_CRITICAL(
         &s_observation_lock
     );
+}
+
+esp_err_t __wrap_esp_spp_disconnect(
+    uint32_t handle
+)
+{
+    portENTER_CRITICAL(
+        &s_observation_lock
+    );
+
+    s_disconnect_call_count +=
+        1;
+
+    s_disconnect_handle =
+        handle;
+
+    portEXIT_CRITICAL(
+        &s_observation_lock
+    );
+
+    xEventGroupSetBits(
+        s_test_events,
+        TEST_EVENT_DISCONNECT_ENTERED
+    );
+
+    (void)xEventGroupWaitBits(
+        s_test_events,
+        TEST_EVENT_RELEASE_DISCONNECT,
+        pdFALSE,
+        pdTRUE,
+        portMAX_DELAY
+    );
+
+    return ESP_OK;
 }
 
 void singlecan_commands_reset_session(void)
@@ -307,6 +367,52 @@ static void accept_task(
     xEventGroupSetBits(
         s_test_events,
         TEST_EVENT_ACCEPT_DONE
+    );
+
+    vTaskDelete(
+        NULL
+    );
+}
+
+static void guarded_disconnect_task(
+    void *task_argument
+)
+{
+    guarded_disconnect_task_context_t *context =
+        task_argument;
+
+    context->issued =
+        bt_spp_disconnect_rejected_client(
+            context->handle,
+            &context->disconnect_result
+        );
+
+    xEventGroupSetBits(
+        s_test_events,
+        TEST_EVENT_GUARDED_DISCONNECT_DONE
+    );
+
+    vTaskDelete(
+        NULL
+    );
+}
+
+static void replacement_accept_task(
+    void *task_argument
+)
+{
+    accept_task_context_t *context =
+        task_argument;
+
+    context->result =
+        bt_spp_accept_session_transition(
+            context->handle,
+            &context->session_id
+        );
+
+    xEventGroupSetBits(
+        s_test_events,
+        TEST_EVENT_REPLACEMENT_ACCEPT_DONE
     );
 
     vTaskDelete(
@@ -553,6 +659,160 @@ static void test_different_handle_replacement_waits_for_old_cleanup(void)
     );
 }
 
+static void test_same_handle_replacement_waits_for_guarded_disconnect(void)
+{
+    reset_observation();
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_spp_session_lifecycle_init()
+    );
+
+    guarded_disconnect_task_context_t disconnect_context = {
+        .handle =
+            300,
+        .disconnect_result =
+            ESP_ERR_INVALID_STATE,
+        .issued =
+            0
+    };
+
+    accept_task_context_t replacement_context = {
+        .handle =
+            300,
+        .session_id =
+            0,
+        .result =
+            0
+    };
+
+    TEST_ASSERT_EQUAL(
+        pdPASS,
+        xTaskCreate(
+            guarded_disconnect_task,
+            "guarded_disconnect",
+            TEST_TASK_STACK_SIZE,
+            &disconnect_context,
+            TEST_TASK_PRIORITY,
+            NULL
+        )
+    );
+
+    const EventBits_t disconnect_entered =
+        xEventGroupWaitBits(
+            s_test_events,
+            TEST_EVENT_DISCONNECT_ENTERED,
+            pdFALSE,
+            pdTRUE,
+            pdMS_TO_TICKS(
+                TEST_WAIT_TIMEOUT_MS
+            )
+        );
+
+    TEST_ASSERT_BITS_HIGH(
+        TEST_EVENT_DISCONNECT_ENTERED,
+        disconnect_entered
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_is_connected()
+    );
+
+    TEST_ASSERT_EQUAL(
+        pdPASS,
+        xTaskCreate(
+            replacement_accept_task,
+            "guarded_replacement",
+            TEST_TASK_STACK_SIZE,
+            &replacement_context,
+            TEST_TASK_PRIORITY,
+            NULL
+        )
+    );
+
+    vTaskDelay(
+        pdMS_TO_TICKS(
+            TEST_BLOCKING_OBSERVATION_MS
+        )
+    );
+
+    const EventBits_t blocked_bits =
+        xEventGroupGetBits(
+            s_test_events
+        );
+
+    TEST_ASSERT_BITS_LOW(
+        TEST_EVENT_REPLACEMENT_ACCEPT_DONE,
+        blocked_bits
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_is_connected()
+    );
+
+    xEventGroupSetBits(
+        s_test_events,
+        TEST_EVENT_RELEASE_DISCONNECT
+    );
+
+    const EventBits_t completed_bits =
+        xEventGroupWaitBits(
+            s_test_events,
+            TEST_EVENT_GUARDED_DISCONNECT_DONE |
+                TEST_EVENT_REPLACEMENT_ACCEPT_DONE,
+            pdFALSE,
+            pdTRUE,
+            pdMS_TO_TICKS(
+                TEST_WAIT_TIMEOUT_MS
+            )
+        );
+
+    TEST_ASSERT_BITS_HIGH(
+        TEST_EVENT_GUARDED_DISCONNECT_DONE |
+            TEST_EVENT_REPLACEMENT_ACCEPT_DONE,
+        completed_bits
+    );
+
+    TEST_ASSERT_TRUE(
+        disconnect_context.issued
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        disconnect_context.disconnect_result
+    );
+
+    TEST_ASSERT_TRUE(
+        replacement_context.result
+    );
+
+    TEST_ASSERT_NOT_EQUAL(
+        0,
+        replacement_context.session_id
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_matches(
+            300,
+            replacement_context.session_id
+        )
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        1,
+        read_counter(
+            &s_disconnect_call_count
+        )
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        300,
+        read_counter(
+            &s_disconnect_handle
+        )
+    );
+}
+
 void app_main(void)
 {
     s_test_events =
@@ -570,6 +830,10 @@ void app_main(void)
 
     RUN_TEST(
         test_different_handle_replacement_waits_for_old_cleanup
+    );
+
+    RUN_TEST(
+        test_same_handle_replacement_waits_for_guarded_disconnect
     );
 
     UNITY_END();
