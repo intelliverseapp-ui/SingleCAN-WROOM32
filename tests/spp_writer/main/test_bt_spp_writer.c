@@ -1266,6 +1266,248 @@ static void test_disconnect_wakes_and_cancels_inflight_write(void)
 }
 
 
+static void test_ordered_close_rejects_old_completion_before_same_handle_reuse(void)
+{
+    set_valid_test_session();
+
+    s_test_session.session_id =
+        7;
+
+    reset_disconnect_observation();
+    reset_wrapped_write_observation();
+
+    s_wrapped_write_result =
+        ESP_OK;
+
+    bt_spp_writer_on_connected();
+    bt_spp_writer_on_congestion_changed();
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_spp_writer_send(
+            "same-length-write",
+            7
+        )
+    );
+
+    const TickType_t first_submission_deadline =
+        xTaskGetTickCount() +
+        pdMS_TO_TICKS(
+            2000
+        );
+
+    while (
+        s_wrapped_write_count < 1 &&
+        xTaskGetTickCount() <
+            first_submission_deadline
+    ) {
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                10
+            )
+        );
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(
+        1,
+        s_wrapped_write_count
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        100,
+        s_wrapped_write_handle
+    );
+
+    const int shared_write_length =
+        s_wrapped_write_length;
+
+    TEST_ASSERT_GREATER_THAN(
+        0,
+        shared_write_length
+    );
+
+    bt_spp_writer_stats_t before_disconnect = {
+        0
+    };
+
+    bt_spp_writer_get_stats(
+        &before_disconnect
+    );
+
+    s_test_session.connected =
+        0;
+
+    bt_spp_writer_on_disconnected();
+
+    const TickType_t cancellation_deadline =
+        xTaskGetTickCount() +
+        pdMS_TO_TICKS(
+            2000
+        );
+
+    while (
+        s_disconnect_count == 0 &&
+        xTaskGetTickCount() <
+            cancellation_deadline
+    ) {
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                10
+            )
+        );
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(
+        1,
+        s_disconnect_count
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        100,
+        s_disconnected_handle
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        7,
+        s_disconnected_session_id
+    );
+
+    bt_spp_writer_stats_t after_disconnect = {
+        0
+    };
+
+    bt_spp_writer_get_stats(
+        &after_disconnect
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        before_disconnect.asynchronous_write_failures + 1,
+        after_disconnect.asynchronous_write_failures
+    );
+
+    esp_spp_cb_param_t old_completion = {
+        0
+    };
+
+    old_completion.write.handle =
+        100;
+
+    old_completion.write.status =
+        ESP_SPP_SUCCESS;
+
+    old_completion.write.len =
+        shared_write_length;
+
+    TEST_ASSERT_FALSE(
+        bt_spp_writer_on_write_event(
+            &old_completion
+        )
+    );
+
+    s_test_session.handle =
+        100;
+
+    s_test_session.session_id =
+        8;
+
+    s_test_session.connected =
+        1;
+
+    s_test_session.server_ready =
+        1;
+
+    s_test_session.congested =
+        0;
+
+    bt_spp_writer_on_connected();
+    bt_spp_writer_on_congestion_changed();
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_spp_writer_send(
+            "same-length-write",
+            8
+        )
+    );
+
+    const TickType_t second_submission_deadline =
+        xTaskGetTickCount() +
+        pdMS_TO_TICKS(
+            2000
+        );
+
+    while (
+        s_wrapped_write_count < 2 &&
+        xTaskGetTickCount() <
+            second_submission_deadline
+    ) {
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                10
+            )
+        );
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(
+        2,
+        s_wrapped_write_count
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        100,
+        s_wrapped_write_handle
+    );
+
+    TEST_ASSERT_EQUAL(
+        shared_write_length,
+        s_wrapped_write_length
+    );
+
+    esp_spp_cb_param_t new_completion = {
+        0
+    };
+
+    new_completion.write.handle =
+        100;
+
+    new_completion.write.status =
+        ESP_SPP_SUCCESS;
+
+    new_completion.write.len =
+        shared_write_length;
+
+    TEST_ASSERT_TRUE(
+        bt_spp_writer_on_write_event(
+            &new_completion
+        )
+    );
+
+    vTaskDelay(
+        pdMS_TO_TICKS(
+            100
+        )
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        1,
+        s_disconnect_count
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_writer_on_write_event(
+            &new_completion
+        )
+    );
+
+    bt_spp_writer_on_disconnected();
+
+    s_wrapped_write_result =
+        ESP_ERR_INVALID_STATE;
+
+    set_valid_test_session();
+}
+
+
 static void test_write_completion_timeout_is_counted_and_disconnects_session(void)
 {
     set_valid_test_session();
@@ -1489,6 +1731,11 @@ void app_main(void)
 
     RUN_TEST(
         test_disconnect_wakes_and_cancels_inflight_write
+    );
+
+
+    RUN_TEST(
+        test_ordered_close_rejects_old_completion_before_same_handle_reuse
     );
 
 
