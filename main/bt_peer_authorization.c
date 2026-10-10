@@ -177,6 +177,67 @@ esp_err_t bt_peer_authorization_init(void)
     return ESP_OK;
 }
 
+int bt_peer_authorization_is_explicitly_trusted(
+    const esp_bd_addr_t peer_address
+)
+{
+    if (
+        peer_address == NULL ||
+        address_is_zero(
+            peer_address
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Explicit peer authorization rejected an invalid address"
+        );
+
+        return 0;
+    }
+
+    esp_bd_addr_t trusted_address = {
+        0
+    };
+
+    const esp_err_t load_result =
+        bt_peer_authorization_load_trusted_address(
+            trusted_address
+        );
+
+    if (load_result != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Explicit peer authorization denied; "
+            "trusted address unavailable"
+        );
+
+        return 0;
+    }
+
+    if (
+        memcmp(
+            peer_address,
+            trusted_address,
+            sizeof(esp_bd_addr_t)
+        ) != 0
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Explicit peer authorization denied an address mismatch"
+        );
+
+        return 0;
+    }
+
+    return bt_peer_authorization_is_trusted(
+        peer_address
+    );
+}
+
+// ------------------------------------------------------------
+// BONDED-DEVICE AUTHORIZATION
+// ------------------------------------------------------------
+
 int bt_peer_authorization_is_trusted(
     const esp_bd_addr_t peer_address
 )

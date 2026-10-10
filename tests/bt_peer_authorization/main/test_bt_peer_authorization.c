@@ -902,6 +902,194 @@ static void test_store_failure_skips_commit_and_closes_handle(void)
 }
 
 
+static void test_explicit_authorization_rejects_missing_record(void)
+{
+    reset_bond_database();
+
+    s_bonded_device_count =
+        1;
+
+    const esp_bd_addr_t peer_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_bonded_devices[0],
+        peer_address
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_peer_authorization_is_explicitly_trusted(
+            peer_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_bond_count_query_count
+    );
+}
+
+static void test_explicit_authorization_rejects_address_mismatch(void)
+{
+    reset_bond_database();
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    const esp_bd_addr_t stored_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    const esp_bd_addr_t other_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x61
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        stored_address
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_peer_authorization_is_explicitly_trusted(
+            other_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_bond_count_query_count
+    );
+}
+
+static void test_explicit_authorization_rejects_unbonded_match(void)
+{
+    reset_bond_database();
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    const esp_bd_addr_t trusted_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        trusted_address
+    );
+
+    s_bonded_device_count =
+        0;
+
+    TEST_ASSERT_FALSE(
+        bt_peer_authorization_is_explicitly_trusted(
+            trusted_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_bond_count_query_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_bond_list_query_count
+    );
+}
+
+static void test_explicit_authorization_accepts_stored_bonded_match(void)
+{
+    reset_bond_database();
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    const esp_bd_addr_t trusted_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        trusted_address
+    );
+
+    s_bonded_device_count =
+        1;
+
+    copy_address(
+        s_bonded_devices[0],
+        trusted_address
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_peer_authorization_is_explicitly_trusted(
+            trusted_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_bond_count_query_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_bond_list_query_count
+    );
+}
+
+
 void app_main(void)
 {
     UNITY_BEGIN();
@@ -960,6 +1148,22 @@ void app_main(void)
 
     RUN_TEST(
         test_store_failure_skips_commit_and_closes_handle
+    );
+
+    RUN_TEST(
+        test_explicit_authorization_rejects_missing_record
+    );
+
+    RUN_TEST(
+        test_explicit_authorization_rejects_address_mismatch
+    );
+
+    RUN_TEST(
+        test_explicit_authorization_rejects_unbonded_match
+    );
+
+    RUN_TEST(
+        test_explicit_authorization_accepts_stored_bonded_match
     );
 
     UNITY_END();

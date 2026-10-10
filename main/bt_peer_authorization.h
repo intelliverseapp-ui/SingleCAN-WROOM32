@@ -32,6 +32,18 @@ int bt_peer_authorization_is_trusted(
 );
 
 /**
+ * Returns nonzero only when the supplied peer:
+ *
+ * - Exactly matches the trusted address stored in NVS
+ * - Remains present in the Bluetooth bonded-device database
+ *
+ * Missing, malformed, or unreadable NVS state fails closed.
+ */
+int bt_peer_authorization_is_explicitly_trusted(
+    const esp_bd_addr_t peer_address
+);
+
+/**
  * Loads the explicitly trusted Bluetooth address from NVS.
  *
  * Returns ESP_OK only when one valid six-byte address is loaded.
