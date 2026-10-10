@@ -23,10 +23,12 @@ static const char *TAG =
     "SingleCAN_CMDS";
 
 #define COMMAND_FIELD_ID "id"
+#define COMMAND_FIELD_VERSION "version"
 #define COMMAND_FIELD_TYPE "type"
 #define COMMAND_FIELD_COMMAND "command"
 #define COMMAND_FIELD_VALUE "value"
 
+#define COMMAND_PROTOCOL_VERSION 1
 #define COMMAND_TYPE "command"
 #define MODULE_CONFIG_COMMAND "config.module"
 
@@ -219,6 +221,10 @@ static bool field_name_is_allowed(
         ) == 0 ||
         strcmp(
             field_name,
+            COMMAND_FIELD_VERSION
+        ) == 0 ||
+        strcmp(
+            field_name,
             COMMAND_FIELD_TYPE
         ) == 0 ||
         strcmp(
@@ -236,6 +242,9 @@ static bool validate_object_schema(
 )
 {
     unsigned int id_count =
+        0;
+
+    unsigned int version_count =
         0;
 
     unsigned int type_count =
@@ -290,6 +299,14 @@ static bool validate_object_schema(
         } else if (
             strcmp(
                 field->string,
+                COMMAND_FIELD_VERSION
+            ) == 0
+        ) {
+            version_count +=
+                1;
+        } else if (
+            strcmp(
+                field->string,
                 COMMAND_FIELD_TYPE
             ) == 0
         ) {
@@ -316,6 +333,7 @@ static bool validate_object_schema(
 
     if (
         id_count != 1 ||
+        version_count != 1 ||
         type_count != 1 ||
         command_count != 1 ||
         value_count > 1
@@ -622,6 +640,12 @@ static void process_json_packet(
             COMMAND_FIELD_ID
         );
 
+    const cJSON *version_item =
+        cJSON_GetObjectItemCaseSensitive(
+            root,
+            COMMAND_FIELD_VERSION
+        );
+
     const cJSON *type_item =
         cJSON_GetObjectItemCaseSensitive(
             root,
@@ -652,6 +676,31 @@ static void process_json_packet(
         ESP_LOGW(
             TAG,
             "JSON packet contains an invalid id"
+        );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
+    }
+
+    if (
+        !cJSON_IsNumber(
+            version_item
+        ) ||
+        !isfinite(
+            version_item->valuedouble
+        ) ||
+        floor(
+            version_item->valuedouble
+        ) != version_item->valuedouble ||
+        version_item->valueint !=
+            COMMAND_PROTOCOL_VERSION
+    ) {
+        ESP_LOGW(
+            TAG,
+            "JSON packet contains an unsupported protocol version"
         );
 
         cJSON_Delete(

@@ -11,7 +11,7 @@ static void test_valid_single_module_configuration(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
@@ -89,14 +89,14 @@ static void assert_packet_is_silently_rejected(
 static void test_malformed_json_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
-        "{\"id\":1,\"type\":\"command\""
+        "{\"id\":1,\"version\":1,\"type\":\"command\""
     );
 }
 
 static void test_trailing_data_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"} trailing"
     );
 }
@@ -108,10 +108,52 @@ static void test_non_object_root_is_rejected(void)
     );
 }
 
+static void test_missing_version_is_rejected(void)
+{
+    assert_packet_is_silently_rejected(
+        "{\"id\":1,\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+}
+
+static void test_duplicate_version_is_rejected(void)
+{
+    assert_packet_is_silently_rejected(
+        "{\"id\":1,\"version\":1,\"version\":1,"
+        "\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+}
+
+static void test_malformed_version_is_rejected(void)
+{
+    assert_packet_is_silently_rejected(
+        "{\"id\":1,\"version\":\"1\","
+        "\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+
+    assert_packet_is_silently_rejected(
+        "{\"id\":1,\"version\":1.5,"
+        "\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+}
+
+static void test_unsupported_version_is_rejected(void)
+{
+    assert_packet_is_silently_rejected(
+        "{\"id\":1,\"version\":2,"
+        "\"type\":\"command\","
+        "\"command\":\"LOCK_DOORS\"}"
+    );
+}
+
+
 static void test_missing_id_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
-        "{\"type\":\"command\","
+        "{\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 }
@@ -119,7 +161,7 @@ static void test_missing_id_is_rejected(void)
 static void test_missing_type_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
-        "{\"id\":1,"
+        "{\"id\":1,\"version\":1,"
         "\"command\":\"LOCK_DOORS\"}"
     );
 }
@@ -128,7 +170,7 @@ static void test_missing_command_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,"
-        "\"type\":\"command\"}"
+        "\"version\":1,\"type\":\"command\"}"
     );
 }
 
@@ -136,7 +178,7 @@ static void test_duplicate_id_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,\"id\":2,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 }
@@ -145,7 +187,7 @@ static void test_duplicate_command_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\","
         "\"command\":\"UNLOCK_DOORS\"}"
     );
@@ -155,7 +197,7 @@ static void test_unknown_field_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\","
         "\"payload\":\"unsafe\"}"
     );
@@ -165,7 +207,7 @@ static void test_string_id_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":\"1\","
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 }
@@ -174,7 +216,7 @@ static void test_fractional_id_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1.5,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 }
@@ -183,7 +225,7 @@ static void test_negative_id_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":-1,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 }
@@ -191,7 +233,7 @@ static void test_negative_id_is_rejected(void)
 static void test_wrong_type_value_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
-        "{\"id\":1,"
+        "{\"id\":1,\"version\":1,"
         "\"type\":\"event\","
         "\"command\":\"LOCK_DOORS\"}"
     );
@@ -201,7 +243,7 @@ static void test_non_string_command_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":42}"
     );
 }
@@ -210,7 +252,7 @@ static void test_empty_command_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"\"}"
     );
 }
@@ -219,7 +261,7 @@ static void test_escaped_nul_is_rejected(void)
 {
     assert_packet_is_silently_rejected(
         "{\"id\":1,"
-        "\"type\":\"command\","
+        "\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK\\u0000DOORS\"}"
     );
 }
@@ -231,7 +273,7 @@ static void test_vehicle_command_before_configuration_is_blocked(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 
@@ -257,7 +299,7 @@ static void test_dual_module_configuration_is_rejected(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"dual\"}"
     );
@@ -280,7 +322,7 @@ static void test_unknown_module_configuration_is_rejected(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"unknown\"}"
     );
@@ -299,7 +341,7 @@ static void test_config_missing_value_returns_error(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\"}"
     );
 
@@ -318,7 +360,7 @@ static void test_vehicle_command_with_value_returns_error(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\","
         "\"value\":\"unsafe\"}"
     );
@@ -342,13 +384,13 @@ static void test_recognized_command_dispatches_after_configuration(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
 
     singlecan_commands_process(
-        "{\"id\":2,\"type\":\"command\","
+        "{\"id\":2,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 
@@ -392,7 +434,7 @@ static void test_unknown_command_returns_unknown_command(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
@@ -402,7 +444,7 @@ static void test_unknown_command_returns_unknown_command(void)
     );
 
     singlecan_commands_process(
-        "{\"id\":2,\"type\":\"command\","
+        "{\"id\":2,\"version\":1,\"type\":\"command\","
         "\"command\":\"UNKNOWN_COMMAND\"}"
     );
 
@@ -436,18 +478,18 @@ static void test_duplicate_request_id_is_rejected(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
 
     singlecan_commands_process(
-        "{\"id\":2,\"type\":\"command\","
+        "{\"id\":2,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 
     singlecan_commands_process(
-        "{\"id\":2,\"type\":\"command\","
+        "{\"id\":2,\"version\":1,\"type\":\"command\","
         "\"command\":\"UNLOCK_DOORS\"}"
     );
 
@@ -482,13 +524,13 @@ static void test_out_of_order_request_id_is_rejected(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":10,\"type\":\"command\","
+        "{\"id\":10,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
 
     singlecan_commands_process(
-        "{\"id\":9,\"type\":\"command\","
+        "{\"id\":9,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 
@@ -522,7 +564,7 @@ static void test_session_reset_clears_configuration(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":10,\"type\":\"command\","
+        "{\"id\":10,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
@@ -541,7 +583,7 @@ static void test_session_reset_clears_configuration(void)
     );
 
     singlecan_commands_process(
-        "{\"id\":11,\"type\":\"command\","
+        "{\"id\":11,\"version\":1,\"type\":\"command\","
         "\"command\":\"LOCK_DOORS\"}"
     );
 
@@ -565,7 +607,7 @@ static void test_session_reset_allows_request_ids_to_restart(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":10,\"type\":\"command\","
+        "{\"id\":10,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
@@ -574,7 +616,7 @@ static void test_session_reset_allows_request_ids_to_restart(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
@@ -610,7 +652,7 @@ static void test_per_session_rate_limit_drops_excess_packet(void)
     singlecan_commands_reset_session();
 
     singlecan_commands_process(
-        "{\"id\":1,\"type\":\"command\","
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
         "\"command\":\"config.module\","
         "\"value\":\"single\"}"
     );
@@ -629,7 +671,7 @@ static void test_per_session_rate_limit_drops_excess_packet(void)
         snprintf(
             packet,
             sizeof(packet),
-            "{\"id\":%d,\"type\":\"command\","
+            "{\"id\":%d,\"version\":1,\"type\":\"command\","
             "\"command\":\"LOCK_DOORS\"}",
             packet_id
         );
@@ -662,7 +704,7 @@ static void test_per_session_rate_limit_drops_excess_packet(void)
      * It must produce neither a response nor another dispatch.
      */
     singlecan_commands_process(
-        "{\"id\":21,\"type\":\"command\","
+        "{\"id\":21,\"version\":1,\"type\":\"command\","
         "\"command\":\"UNLOCK_DOORS\"}"
     );
 
@@ -707,6 +749,23 @@ void app_main(void)
     RUN_TEST(
         test_non_object_root_is_rejected
     );
+
+    RUN_TEST(
+        test_missing_version_is_rejected
+    );
+
+    RUN_TEST(
+        test_duplicate_version_is_rejected
+    );
+
+    RUN_TEST(
+        test_malformed_version_is_rejected
+    );
+
+    RUN_TEST(
+        test_unsupported_version_is_rejected
+    );
+
 
     RUN_TEST(
         test_missing_id_is_rejected
