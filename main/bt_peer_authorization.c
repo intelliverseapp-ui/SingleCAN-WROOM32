@@ -1,4 +1,5 @@
 #include "bt_peer_authorization.h"
+#include "sdkconfig.h"
 
 #include "esp_gap_bt_api.h"
 #include "esp_log.h"
@@ -7,6 +8,10 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef CONFIG_SINGLECAN_TRUSTED_PEER_ADDRESS
+#define CONFIG_SINGLECAN_TRUSTED_PEER_ADDRESS ""
+#endif
 
 static const char *TAG =
     "BT_PEER_AUTH";
@@ -40,6 +45,123 @@ static int address_is_zero(
         sizeof(esp_bd_addr_t)
     ) == 0;
 }
+
+static int uppercase_hex_value(
+    char character
+)
+{
+    if (
+        character >= '0' &&
+        character <= '9'
+    ) {
+        return character - '0';
+    }
+
+    if (
+        character >= 'A' &&
+        character <= 'F'
+    ) {
+        return character - 'A' + 10;
+    }
+
+    return -1;
+}
+
+esp_err_t bt_peer_authorization_parse_address(
+    const char *address_text,
+    esp_bd_addr_t parsed_address
+)
+{
+    if (
+        address_text == NULL ||
+        parsed_address == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(
+        parsed_address,
+        0,
+        sizeof(esp_bd_addr_t)
+    );
+
+    if (
+        strlen(
+            address_text
+        ) != 17
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (
+        size_t byte_index = 0;
+        byte_index < sizeof(esp_bd_addr_t);
+        ++byte_index
+    ) {
+        const size_t text_index =
+            byte_index * 3;
+
+        const int high_nibble =
+            uppercase_hex_value(
+                address_text[text_index]
+            );
+
+        const int low_nibble =
+            uppercase_hex_value(
+                address_text[text_index + 1]
+            );
+
+        if (
+            high_nibble < 0 ||
+            low_nibble < 0
+        ) {
+            memset(
+                parsed_address,
+                0,
+                sizeof(esp_bd_addr_t)
+            );
+
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (
+            byte_index <
+                sizeof(esp_bd_addr_t) - 1 &&
+            address_text[text_index + 2] != ':'
+        ) {
+            memset(
+                parsed_address,
+                0,
+                sizeof(esp_bd_addr_t)
+            );
+
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        parsed_address[byte_index] =
+            (uint8_t)(
+                (high_nibble << 4) |
+                low_nibble
+            );
+    }
+
+    if (
+        address_is_zero(
+            parsed_address
+        )
+    ) {
+        memset(
+            parsed_address,
+            0,
+            sizeof(esp_bd_addr_t)
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return ESP_OK;
+}
+
 
 esp_err_t bt_peer_authorization_load_trusted_address(
     esp_bd_addr_t trusted_address
@@ -150,12 +272,137 @@ esp_err_t bt_peer_authorization_store_trusted_address(
     return result;
 }
 
+esp_err_t bt_peer_authorization_reconcile_configured_address(
+    const char *configured_address
+)
+{
+    if (configured_address == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (configured_address[0] == '\0') {
+        ESP_LOGW(
+            TAG,
+            "No trusted Bluetooth peer is configured; "
+            "SPP admission remains disabled"
+        );
+
+        return ESP_OK;
+    }
+
+    esp_bd_addr_t configured_peer = {
+        0
+    };
+
+    const esp_err_t parse_result =
+        bt_peer_authorization_parse_address(
+            configured_address,
+            configured_peer
+        );
+
+    if (parse_result != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Configured trusted Bluetooth address is malformed"
+        );
+
+        return parse_result;
+    }
+
+    esp_bd_addr_t stored_peer = {
+        0
+    };
+
+    const esp_err_t load_result =
+        bt_peer_authorization_load_trusted_address(
+            stored_peer
+        );
+
+    if (load_result == ESP_ERR_NVS_NOT_FOUND) {
+        const esp_err_t store_result =
+            bt_peer_authorization_store_trusted_address(
+                configured_peer
+            );
+
+        if (store_result != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "Unable to provision configured trusted peer: %s",
+                esp_err_to_name(
+                    store_result
+                )
+            );
+
+            return store_result;
+        }
+
+        ESP_LOGI(
+            TAG,
+            "Configured trusted Bluetooth peer provisioned"
+        );
+
+        return ESP_OK;
+    }
+
+    if (load_result != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Unable to read existing trusted-peer state: %s",
+            esp_err_to_name(
+                load_result
+            )
+        );
+
+        return load_result;
+    }
+
+    if (
+        memcmp(
+            stored_peer,
+            configured_peer,
+            sizeof(esp_bd_addr_t)
+        ) != 0
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Configured trusted peer conflicts with existing NVS state"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Configured trusted Bluetooth peer matches NVS state"
+    );
+
+    return ESP_OK;
+}
+
+
 // ------------------------------------------------------------
 // AUTHORIZATION INITIALIZATION
 // ------------------------------------------------------------
 
 esp_err_t bt_peer_authorization_init(void)
 {
+    const esp_err_t provisioning_result =
+        bt_peer_authorization_reconcile_configured_address(
+            CONFIG_SINGLECAN_TRUSTED_PEER_ADDRESS
+        );
+
+    if (provisioning_result != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Trusted-peer provisioning validation failed: %s",
+            esp_err_to_name(
+                provisioning_result
+            )
+        );
+
+        return provisioning_result;
+    }
+
     const int bonded_device_count =
         esp_bt_gap_get_bond_device_num();
 

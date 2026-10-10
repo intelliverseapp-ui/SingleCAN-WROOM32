@@ -1038,6 +1038,344 @@ static void test_explicit_authorization_rejects_unbonded_match(void)
     );
 }
 
+static void test_reconcile_empty_configuration_remains_unprovisioned(void)
+{
+    reset_bond_database();
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_peer_authorization_reconcile_configured_address(
+            ""
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_commit_count
+    );
+}
+
+
+static void test_reconcile_rejects_null_and_malformed_configuration(void)
+{
+    reset_bond_database();
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_reconcile_configured_address(
+            NULL
+        )
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_reconcile_configured_address(
+            "10:20:30:40:50:gg"
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_set_blob_count
+    );
+}
+
+
+static void test_reconcile_provisions_missing_record(void)
+{
+    reset_bond_database();
+
+    const esp_bd_addr_t expected_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_peer_authorization_reconcile_configured_address(
+            "10:20:30:40:50:60"
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        2,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_commit_count
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        expected_address,
+        s_nvs_trusted_address,
+        sizeof(esp_bd_addr_t)
+    );
+}
+
+
+static void test_reconcile_accepts_matching_record_without_write(void)
+{
+    reset_bond_database();
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    const esp_bd_addr_t trusted_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        trusted_address
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_peer_authorization_reconcile_configured_address(
+            "10:20:30:40:50:60"
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        s_nvs_get_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_commit_count
+    );
+}
+
+
+static void test_reconcile_rejects_conflicting_record_without_overwrite(void)
+{
+    reset_bond_database();
+
+    s_nvs_get_blob_result =
+        ESP_OK;
+
+    const esp_bd_addr_t stored_address = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x61
+    };
+
+    copy_address(
+        s_nvs_trusted_address,
+        stored_address
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_STATE,
+        bt_peer_authorization_reconcile_configured_address(
+            "10:20:30:40:50:60"
+        )
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        stored_address,
+        s_nvs_trusted_address,
+        sizeof(esp_bd_addr_t)
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_set_blob_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_commit_count
+    );
+}
+
+
+static void test_parse_accepts_canonical_uppercase_address(void)
+{
+    esp_bd_addr_t parsed_address = {
+        0
+    };
+
+    const esp_bd_addr_t expected_address = {
+        0x10,
+        0x2A,
+        0x30,
+        0x4B,
+        0x50,
+        0x6C
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_peer_authorization_parse_address(
+            "10:2A:30:4B:50:6C",
+            parsed_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        expected_address,
+        parsed_address,
+        sizeof(esp_bd_addr_t)
+    );
+}
+
+
+static void test_parse_rejects_null_empty_and_zero_addresses(void)
+{
+    esp_bd_addr_t parsed_address = {
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF
+    };
+
+    const esp_bd_addr_t zero_address = {
+        0
+    };
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_parse_address(
+            NULL,
+            parsed_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_parse_address(
+            "",
+            parsed_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_parse_address(
+            "10:20:30:40:50:60",
+            NULL
+        )
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        bt_peer_authorization_parse_address(
+            "00:00:00:00:00:00",
+            parsed_address
+        )
+    );
+
+    TEST_ASSERT_EQUAL_MEMORY(
+        zero_address,
+        parsed_address,
+        sizeof(esp_bd_addr_t)
+    );
+}
+
+
+static void test_parse_rejects_noncanonical_address_text(void)
+{
+    static const char *invalid_addresses[] = {
+        "10:2a:30:4B:50:6C",
+        "10-2A-30-4B-50-6C",
+        "10:2A:30:4B:50",
+        "10:2A:30:4B:50:6C:70",
+        "10:2A:30:4B:50:GG",
+        "102A:30:4B:50:6C",
+        " 10:2A:30:4B:50:6C",
+        "10:2A:30:4B:50:6C "
+    };
+
+    const esp_bd_addr_t zero_address = {
+        0
+    };
+
+    for (
+        size_t index = 0;
+        index <
+            sizeof(invalid_addresses) /
+            sizeof(invalid_addresses[0]);
+        ++index
+    ) {
+        esp_bd_addr_t parsed_address = {
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF
+        };
+
+        TEST_ASSERT_EQUAL(
+            ESP_ERR_INVALID_ARG,
+            bt_peer_authorization_parse_address(
+                invalid_addresses[index],
+                parsed_address
+            )
+        );
+
+        TEST_ASSERT_EQUAL_MEMORY(
+            zero_address,
+            parsed_address,
+            sizeof(esp_bd_addr_t)
+        );
+    }
+}
+
+
 static void test_explicit_authorization_accepts_stored_bonded_match(void)
 {
     reset_bond_database();
@@ -1160,6 +1498,38 @@ void app_main(void)
 
     RUN_TEST(
         test_explicit_authorization_rejects_unbonded_match
+    );
+
+    RUN_TEST(
+        test_reconcile_empty_configuration_remains_unprovisioned
+    );
+
+    RUN_TEST(
+        test_reconcile_rejects_null_and_malformed_configuration
+    );
+
+    RUN_TEST(
+        test_reconcile_provisions_missing_record
+    );
+
+    RUN_TEST(
+        test_reconcile_accepts_matching_record_without_write
+    );
+
+    RUN_TEST(
+        test_reconcile_rejects_conflicting_record_without_overwrite
+    );
+
+    RUN_TEST(
+        test_parse_accepts_canonical_uppercase_address
+    );
+
+    RUN_TEST(
+        test_parse_rejects_null_empty_and_zero_addresses
+    );
+
+    RUN_TEST(
+        test_parse_rejects_noncanonical_address_text
     );
 
     RUN_TEST(

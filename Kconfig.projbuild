@@ -1,7 +1,0 @@
-menu "SingleCAN Configuration"
-
-    # No active configuration options yet.
-    # Future options (Wi-Fi SSID, password, CAN bitrate, etc.)
-    # will be added here once BabyNode Automotive integration begins.
-
-endmenu
