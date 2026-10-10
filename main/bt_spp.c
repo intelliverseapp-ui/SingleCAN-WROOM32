@@ -263,18 +263,21 @@ static void bt_spp_disconnect_writer_session(
          * can be submitted to the failed session.
          */
         if (
-            bt_spp_session_matches(
+            bt_spp_session_force_close_if_matches(
                 handle,
                 session_id
             )
         ) {
-            bt_spp_session_force_close();
-
             singlecan_commands_reset_session();
 
             bt_spp_framer_reset();
 
             bt_spp_writer_on_disconnected();
+        } else {
+            ESP_LOGW(
+                TAG,
+                "Ignoring stale writer force-close request"
+            );
         }
     }
 }

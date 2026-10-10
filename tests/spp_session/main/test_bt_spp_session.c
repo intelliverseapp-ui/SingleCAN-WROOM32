@@ -1328,6 +1328,106 @@ static void test_reused_handle_requires_new_session_generation(void)
 }
 
 
+static void test_conditional_force_close_cannot_clear_replacement_generation(void)
+{
+    bt_spp_session_init();
+
+    uint32_t original_session_id =
+        0;
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_accept(
+            100,
+            &original_session_id
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_close(
+            100
+        )
+    );
+
+    uint32_t replacement_session_id =
+        0;
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_accept(
+            100,
+            &replacement_session_id
+        )
+    );
+
+    TEST_ASSERT_NOT_EQUAL(
+        original_session_id,
+        replacement_session_id
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_force_close_if_matches(
+            100,
+            original_session_id
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_is_connected()
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        100,
+        bt_spp_session_get_handle()
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        replacement_session_id,
+        bt_spp_session_get_id()
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_matches(
+            100,
+            replacement_session_id
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_force_close_if_matches(
+            200,
+            replacement_session_id
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_force_close_if_matches(
+            100,
+            0
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_force_close_if_matches(
+            100,
+            replacement_session_id
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_is_connected()
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        0,
+        bt_spp_session_get_handle()
+    );
+
+    TEST_ASSERT_NOT_EQUAL(
+        replacement_session_id,
+        bt_spp_session_get_id()
+    );
+}
+
+
 static void test_force_close_while_idle_advances_generation_safely(void)
 {
     bt_spp_session_init();
@@ -1514,6 +1614,11 @@ void app_main(void)
 
     RUN_TEST(
         test_reused_handle_requires_new_session_generation
+    );
+
+
+    RUN_TEST(
+        test_conditional_force_close_cannot_clear_replacement_generation
     );
 
 
