@@ -274,6 +274,55 @@ int bt_spp_session_close(
     return closed;
 }
 
+int bt_spp_session_force_close_if_matches(
+    uint32_t handle,
+    uint32_t session_id
+)
+{
+    if (
+        handle == 0 ||
+        session_id == 0
+    ) {
+        return 0;
+    }
+
+    int closed =
+        0;
+
+    portENTER_CRITICAL(
+        &s_session_lock
+    );
+
+    if (
+        s_connected &&
+        s_active_handle ==
+            handle &&
+        s_session_id ==
+            session_id
+    ) {
+        s_connected =
+            0;
+
+        s_active_handle =
+            0;
+
+        s_congested =
+            0;
+
+        advance_session_id_locked();
+
+        closed =
+            1;
+    }
+
+    portEXIT_CRITICAL(
+        &s_session_lock
+    );
+
+    return closed;
+}
+
+
 void bt_spp_session_force_close(void)
 {
     portENTER_CRITICAL(

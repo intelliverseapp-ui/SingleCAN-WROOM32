@@ -37,6 +37,7 @@ static const char *TAG_TASKS =
 #define CAN_RECOVERY_MAXIMUM_ATTEMPTS 3
 #define CAN_RECOVERY_RETRY_DELAY_MS 500
 #define CAN_ALERT_POLL_INTERVAL_MS 250
+#define CAN_ALERT_READ_MAXIMUM_FAILURES 3
 #define CAN_RECOVERY_COMPLETION_TIMEOUT_MS 10000
 
 #define SINGLECAN_TWAI_ALERTS \
@@ -611,7 +612,20 @@ static void can_health_task(
         );
     }
 
+    uint32_t consecutive_alert_read_failures =
+        0;
+
     while (true) {
+        if (twai_is_faulted()) {
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    CAN_ERROR_DELAY_MS
+                )
+            );
+
+            continue;
+        }
+
         uint32_t alerts =
             0;
 
@@ -627,38 +641,61 @@ static void can_health_task(
             read_result ==
             ESP_OK
         ) {
+            consecutive_alert_read_failures =
+                0;
+
             process_twai_alerts(
                 alerts
             );
         } else if (
-            read_result !=
-            ESP_ERR_TIMEOUT &&
-            read_result !=
+            read_result ==
+            ESP_ERR_TIMEOUT
+        ) {
+            consecutive_alert_read_failures =
+                0;
+        } else if (
+            read_result ==
             ESP_ERR_INVALID_STATE
         ) {
+            if (
+                !twai_is_recovering() &&
+                !twai_is_faulted()
+            ) {
+                ESP_LOGE(
+                    TAG_TASKS,
+                    "TWAI alert monitor lost active driver state"
+                );
+
+                enter_twai_fault_state(
+                    "TWAI alert driver became unavailable"
+                );
+            }
+        } else {
+            consecutive_alert_read_failures +=
+                1;
+
             ESP_LOGE(
                 TAG_TASKS,
-                "TWAI alert read failed: %s",
+                "TWAI alert read failed: %s; "
+                "consecutive failures=%" PRIu32 "/%d",
                 esp_err_to_name(
                     read_result
-                )
+                ),
+                consecutive_alert_read_failures,
+                CAN_ALERT_READ_MAXIMUM_FAILURES
             );
 
             singlecan_leds_error();
-        } else if (
-            read_result ==
-                ESP_ERR_INVALID_STATE &&
-            !twai_is_recovering() &&
-            !twai_is_faulted()
-        ) {
-            ESP_LOGE(
-                TAG_TASKS,
-                "TWAI alert monitor lost active driver state"
-            );
 
-            enter_twai_fault_state(
-                "TWAI alert driver became unavailable"
-            );
+            if (
+                consecutive_alert_read_failures >=
+                    CAN_ALERT_READ_MAXIMUM_FAILURES &&
+                !twai_is_faulted()
+            ) {
+                enter_twai_fault_state(
+                    "TWAI alert monitoring repeatedly failed"
+                );
+            }
         }
 
         if (
@@ -692,13 +729,6 @@ static void can_health_task(
             }
         }
 
-        if (twai_is_faulted()) {
-            vTaskDelay(
-                pdMS_TO_TICKS(
-                    CAN_ERROR_DELAY_MS
-                )
-            );
-        }
     }
 }
 

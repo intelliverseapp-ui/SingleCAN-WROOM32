@@ -76,6 +76,11 @@ int bt_spp_session_close(
  * Use only after a verified active-session failure when the Bluetooth
  * stack cannot complete the requested disconnect.
  */
+int bt_spp_session_force_close_if_matches(
+    uint32_t handle,
+    uint32_t session_id
+);
+
 void bt_spp_session_force_close(void);
 
 /**

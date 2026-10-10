@@ -1,0 +1,19 @@
+menu "SingleCAN Configuration"
+
+    config SINGLECAN_TRUSTED_PEER_ADDRESS
+        string "Trusted Classic Bluetooth peer address"
+        default ""
+        help
+            Classic Bluetooth address authorized to own the SingleCAN
+            SPP command session.
+
+            Use the canonical format XX:XX:XX:XX:XX:XX.
+
+            Leave this value empty only for an intentionally
+            unprovisioned development or manufacturing image. An empty
+            value does not authorize the first connecting peer.
+
+            At runtime, the configured address must also remain present
+            in the ESP-IDF Classic Bluetooth bonded-device database.
+
+endmenu

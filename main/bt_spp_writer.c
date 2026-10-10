@@ -65,6 +65,9 @@ static volatile uint32_t s_inflight_handle =
 static volatile uint32_t s_inflight_session_id =
     0;
 
+static volatile size_t s_inflight_length =
+    0;
+
 static uint32_t s_queue_full_count =
     0;
 
@@ -169,7 +172,8 @@ static int get_session_snapshot(
 
 static int claim_inflight_write(
     uint32_t handle,
-    uint32_t session_id
+    uint32_t session_id,
+    size_t length
 )
 {
     int claimed =
@@ -188,6 +192,9 @@ static int claim_inflight_write(
 
         s_inflight_session_id =
             session_id;
+
+        s_inflight_length =
+            length;
 
         claimed =
             1;
@@ -223,6 +230,9 @@ static void clear_inflight_write(
             0;
 
         s_inflight_session_id =
+            0;
+
+        s_inflight_length =
             0;
     }
 
@@ -440,7 +450,8 @@ static void bt_spp_writer_task(
         if (
             !claim_inflight_write(
                 session.handle,
-                session.session_id
+                session.session_id,
+                item.length
             )
         ) {
             ESP_LOGE(
@@ -674,6 +685,9 @@ esp_err_t bt_spp_writer_init(
         0;
 
     s_inflight_session_id =
+        0;
+
+    s_inflight_length =
         0;
 
     s_queue_full_count =
@@ -1011,7 +1025,11 @@ int bt_spp_writer_on_write_event(
     if (
         s_write_in_progress &&
         parameters->write.handle ==
-            s_inflight_handle
+            s_inflight_handle &&
+        parameters->write.len >=
+            0 &&
+        (size_t)parameters->write.len ==
+            s_inflight_length
     ) {
         matches_inflight =
             1;
@@ -1028,8 +1046,9 @@ int bt_spp_writer_on_write_event(
         ESP_LOGW(
             TAG,
             "Ignoring late or unrelated SPP write event, "
-            "handle=%" PRIu32,
-            parameters->write.handle
+            "handle=%" PRIu32 ", len=%d",
+            parameters->write.handle,
+            parameters->write.len
         );
 
         return 0;
