@@ -10,6 +10,7 @@ idf_component_register(
     REQUIRES
         unity
         bt
+        nvs_flash
 )
 
 target_link_libraries(
@@ -17,4 +18,9 @@ target_link_libraries(
     INTERFACE
         "-Wl,--wrap=esp_bt_gap_get_bond_device_num"
         "-Wl,--wrap=esp_bt_gap_get_bond_device_list"
+        "-Wl,--wrap=nvs_open"
+        "-Wl,--wrap=nvs_get_blob"
+        "-Wl,--wrap=nvs_set_blob"
+        "-Wl,--wrap=nvs_commit"
+        "-Wl,--wrap=nvs_close"
 )
