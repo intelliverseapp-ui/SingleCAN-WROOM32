@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
+#include "bt_peer_authorization.h"
 #include "bt_spp.h"
 #include "bt_spp_framer.h"
 #include "bt_spp_session.h"
@@ -576,8 +577,14 @@ static void spp_event_handler(
             param->srv_open.status ==
                 ESP_SPP_SUCCESS;
 
-        const int connection_accepted =
+        const int peer_is_trusted =
             connection_is_valid &&
+            bt_peer_authorization_is_trusted(
+                param->srv_open.rem_bda
+            );
+
+        const int connection_accepted =
+            peer_is_trusted &&
             bt_spp_session_accept(
                 new_handle,
                 &accepted_session_id
@@ -586,8 +593,8 @@ static void spp_event_handler(
         if (!connection_accepted) {
             ESP_LOGW(
                 TAG,
-                "Rejecting additional or invalid SPP client, "
-                "handle=%" PRIu32,
+                "Rejecting untrusted, additional, or invalid "
+                "SPP client, handle=%" PRIu32,
                 new_handle
             );
 
@@ -908,6 +915,25 @@ esp_err_t bt_spp_init(void)
         ESP_LOGE(
             TAG,
             "Bluedroid enable failed: %s",
+            esp_err_to_name(
+                result
+            )
+        );
+
+        bt_spp_mark_server_failed(
+            result
+        );
+
+        return result;
+    }
+
+    result =
+        bt_peer_authorization_init();
+
+    if (result != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Peer authorization initialization failed: %s",
             esp_err_to_name(
                 result
             )
