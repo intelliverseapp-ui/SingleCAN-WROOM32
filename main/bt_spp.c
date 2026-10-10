@@ -16,6 +16,7 @@
 #include "bt_peer_authorization.h"
 #include "bt_spp.h"
 #include "bt_spp_framer.h"
+#include "bt_spp_rejected_client.h"
 #include "bt_spp_session.h"
 #include "bt_spp_writer.h"
 #include "singlecan_commands.h"
@@ -601,23 +602,9 @@ static void spp_event_handler(
                 new_handle
             );
 
-            const esp_err_t disconnect_result =
-                esp_spp_disconnect(
-                    new_handle
-                );
-
-            if (
-                disconnect_result !=
-                ESP_OK
-            ) {
-                ESP_LOGE(
-                    TAG,
-                    "Failed to disconnect rejected SPP client: %s",
-                    esp_err_to_name(
-                        disconnect_result
-                    )
-                );
-            }
+            bt_spp_rejected_client_reject(
+                new_handle
+            );
 
             break;
         }
@@ -642,6 +629,10 @@ static void spp_event_handler(
     case ESP_SPP_CLOSE_EVT: {
         const uint32_t closed_handle =
             param->close.handle;
+
+        bt_spp_rejected_client_on_closed(
+            closed_handle
+        );
 
         if (
             !bt_spp_session_handle_is_active(
@@ -789,6 +780,27 @@ esp_err_t bt_spp_init(void)
     singlecan_commands_reset_session();
 
     bt_spp_session_init();
+
+    const esp_err_t rejected_client_result =
+        bt_spp_rejected_client_init(
+            esp_spp_disconnect,
+            bt_spp_session_get_handle
+        );
+
+    if (
+        rejected_client_result !=
+        ESP_OK
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Failed to initialize rejected-client recovery: %s",
+            esp_err_to_name(
+                rejected_client_result
+            )
+        );
+
+        return rejected_client_result;
+    }
 
     bt_spp_reset_readiness_state();
 
