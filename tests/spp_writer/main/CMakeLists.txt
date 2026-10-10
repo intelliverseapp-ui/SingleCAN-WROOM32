@@ -12,3 +12,9 @@ idf_component_register(
         bt
         freertos
 )
+
+target_link_libraries(
+    ${COMPONENT_LIB}
+    INTERFACE
+        "-Wl,--wrap=esp_spp_write"
+)
