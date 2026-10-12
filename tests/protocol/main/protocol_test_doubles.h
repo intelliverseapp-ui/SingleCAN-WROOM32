@@ -22,6 +22,10 @@ void protocol_test_doubles_reset(void);
 const protocol_test_response_capture_t *
 protocol_test_response_capture(void);
 
+void protocol_test_set_active_session(
+    uint32_t session_id
+);
+
 int protocol_test_dispatch_call_count(void);
 
 const char *protocol_test_dispatched_command(void);

@@ -28,6 +28,7 @@ static const char *TAG =
 #define COMMAND_FIELD_TYPE "type"
 #define COMMAND_FIELD_COMMAND "command"
 #define COMMAND_FIELD_VALUE "value"
+#define COMMAND_FIELD_SESSION_ID "session_id"
 
 #define COMMAND_PROTOCOL_VERSION 1
 #define COMMAND_TYPE "command"
@@ -78,7 +79,8 @@ static bool process_module_config(
 );
 
 static void process_json_packet(
-    const char *packet
+    const char *packet,
+    uint32_t origin_session_id
 );
 
 static bool request_rate_limit_allows_packet(void);
@@ -236,6 +238,10 @@ static bool field_name_is_allowed(
         strcmp(
             field_name,
             COMMAND_FIELD_VALUE
+        ) == 0 ||
+        strcmp(
+            field_name,
+            COMMAND_FIELD_SESSION_ID
         ) == 0;
 }
 
@@ -256,6 +262,9 @@ static bool validate_object_schema(
         0;
 
     unsigned int value_count =
+        0;
+
+    unsigned int session_id_count =
         0;
 
     const cJSON *field =
@@ -330,6 +339,14 @@ static bool validate_object_schema(
         ) {
             value_count +=
                 1;
+        } else if (
+            strcmp(
+                field->string,
+                COMMAND_FIELD_SESSION_ID
+            ) == 0
+        ) {
+            session_id_count +=
+                1;
         }
     }
 
@@ -338,7 +355,8 @@ static bool validate_object_schema(
         version_count != 1 ||
         type_count != 1 ||
         command_count != 1 ||
-        value_count > 1
+        value_count > 1 ||
+        session_id_count > 1
     ) {
         ESP_LOGW(
             TAG,
@@ -388,6 +406,47 @@ static bool parse_packet_id(
 
     *packet_id =
         (int)numeric_id;
+
+    return true;
+}
+
+// ------------------------------------------------------------
+// STRICT SESSION-ID VALIDATION
+// ------------------------------------------------------------
+
+static bool parse_session_id(
+    const cJSON *session_item,
+    uint32_t *session_id
+)
+{
+    if (
+        session_item == NULL ||
+        session_id == NULL ||
+        !cJSON_IsNumber(
+            session_item
+        )
+    ) {
+        return false;
+    }
+
+    const double numeric_id =
+        session_item->valuedouble;
+
+    if (
+        !isfinite(
+            numeric_id
+        ) ||
+        numeric_id < 1.0 ||
+        numeric_id > (double)UINT32_MAX ||
+        floor(
+            numeric_id
+        ) != numeric_id
+    ) {
+        return false;
+    }
+
+    *session_id =
+        (uint32_t)numeric_id;
 
     return true;
 }
@@ -554,7 +613,8 @@ static bool request_rate_limit_allows_packet(void)
 // ------------------------------------------------------------
 
 static void process_json_packet(
-    const char *packet
+    const char *packet,
+    uint32_t origin_session_id
 )
 {
     if (
@@ -761,6 +821,52 @@ static void process_json_packet(
     const char *command =
         command_item->valuestring;
 
+    const bool is_protocol_handshake =
+        strcasecmp(
+            command,
+            PROTOCOL_HANDSHAKE_COMMAND
+        ) == 0;
+
+    const cJSON *session_item =
+        cJSON_GetObjectItemCaseSensitive(
+            root,
+            COMMAND_FIELD_SESSION_ID
+        );
+
+    /*
+     * Every non-handshake command must be bound to the session that
+     * delivered it. The handshake may omit session_id, but any
+     * supplied value is validated identically.
+     */
+    if (
+        session_item != NULL ||
+        !is_protocol_handshake
+    ) {
+        uint32_t envelope_session_id =
+            0U;
+
+        if (
+            !parse_session_id(
+                session_item,
+                &envelope_session_id
+            ) ||
+            envelope_session_id !=
+                origin_session_id
+        ) {
+            ESP_LOGW(
+                TAG,
+                "Command rejected: missing, invalid, or mismatched "
+                "session_id"
+            );
+
+            cJSON_Delete(
+                root
+            );
+
+            return;
+        }
+    }
+
     const char *value =
         NULL;
 
@@ -781,6 +887,7 @@ static void process_json_packet(
 
             singlecan_response_send(
                 packet_id,
+                origin_session_id,
                 "error",
                 command,
                 "invalid_value"
@@ -797,12 +904,6 @@ static void process_json_packet(
             value_item->valuestring;
     }
 
-    const bool is_protocol_handshake =
-        strcasecmp(
-            command,
-            PROTOCOL_HANDSHAKE_COMMAND
-        ) == 0;
-
     const bool is_module_config =
         strcasecmp(
             command,
@@ -815,6 +916,7 @@ static void process_json_packet(
     ) {
         singlecan_response_send(
             packet_id,
+            origin_session_id,
             "error",
             command,
             "missing_value"
@@ -833,6 +935,7 @@ static void process_json_packet(
     ) {
         singlecan_response_send(
             packet_id,
+            origin_session_id,
             "error",
             command,
             "unexpected_value"
@@ -864,6 +967,7 @@ static void process_json_packet(
 
         singlecan_response_send(
             packet_id,
+            origin_session_id,
             "error",
             command,
             "duplicate_request_id"
@@ -900,27 +1004,10 @@ static void process_json_packet(
             COMMAND_PROTOCOL_VERSION
         );
 
-        const uint32_t session_id =
-            bt_spp_session_get_id();
-
-        if (session_id == 0U) {
-            ESP_LOGE(
-                TAG,
-                "Protocol handshake rejected without active session"
-            );
-
-            singlecan_response_send(
-                packet_id,
-                "error",
-                command,
-                "session_unavailable"
-            );
-        } else {
-            singlecan_handshake_response_send(
-                packet_id,
-                session_id
-            );
-        }
+        singlecan_handshake_response_send(
+            packet_id,
+            origin_session_id
+        );
 
         cJSON_Delete(
             root
@@ -937,6 +1024,7 @@ static void process_json_packet(
         ) {
             singlecan_response_send(
                 packet_id,
+                origin_session_id,
                 "ok",
                 command,
                 NULL
@@ -953,6 +1041,7 @@ static void process_json_packet(
 
             singlecan_response_send(
                 packet_id,
+                origin_session_id,
                 "error",
                 command,
                 reason
@@ -974,6 +1063,7 @@ static void process_json_packet(
 
         singlecan_response_send(
             packet_id,
+            origin_session_id,
             "error",
             command,
             "module_not_configured"
@@ -997,6 +1087,7 @@ static void process_json_packet(
     ) {
         singlecan_response_send(
             packet_id,
+            origin_session_id,
             "unsupported",
             command,
             "not_implemented"
@@ -1004,6 +1095,7 @@ static void process_json_packet(
     } else {
         singlecan_response_send(
             packet_id,
+            origin_session_id,
             "unsupported",
             command,
             "unknown_command"
@@ -1020,7 +1112,8 @@ static void process_json_packet(
 // ------------------------------------------------------------
 
 void singlecan_commands_process(
-    const char *packet
+    const char *packet,
+    uint32_t session_id
 )
 {
     if (packet == NULL) {
@@ -1041,8 +1134,26 @@ void singlecan_commands_process(
         return;
     }
 
+    /*
+     * The originating session must still be the active one. A frame
+     * from an older session is dropped, never relabeled.
+     */
+    if (
+        session_id == 0U ||
+        session_id !=
+            bt_spp_session_get_id()
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Packet dropped: originating SPP session is not active"
+        );
+
+        return;
+    }
+
     process_json_packet(
-        packet
+        packet,
+        session_id
     );
 }
 

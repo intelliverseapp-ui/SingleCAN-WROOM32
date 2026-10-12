@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,9 +37,15 @@ int singlecan_commands_is_configured(void);
  *
  * The caller must provide a null-terminated string containing
  * exactly one complete JSON object without the framing newline.
+ *
+ * session_id is the SPP session that delivered the frame. Every
+ * command except protocol.handshake must carry an equal, nonzero
+ * "session_id" field, and that session must still be active.
+ * Otherwise the packet is dropped before any side effect.
  */
 void singlecan_commands_process(
-    const char *packet
+    const char *packet,
+    uint32_t session_id
 );
 
 #ifdef __cplusplus

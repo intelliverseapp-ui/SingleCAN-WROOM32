@@ -12,9 +12,12 @@ extern "C" {
  *
  * The supplied pointer remains valid only for the duration of the
  * callback. The receiver must process or copy the frame immediately.
+ * session_id identifies the SPP session that delivered the final
+ * fragment of the frame.
  */
 typedef void (*bt_spp_frame_handler_t)(
-    const char *frame
+    const char *frame,
+    uint32_t session_id
 );
 
 /**
@@ -50,7 +53,8 @@ void bt_spp_framer_reset(void);
  */
 void bt_spp_framer_process(
     const uint8_t *data,
-    size_t data_length
+    size_t data_length,
+    uint32_t session_id
 );
 
 #ifdef __cplusplus

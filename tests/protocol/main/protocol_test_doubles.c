@@ -7,6 +7,9 @@
 
 static protocol_test_response_capture_t s_response;
 
+static uint32_t s_active_session_id =
+    42U;
+
 static int s_dispatch_call_count =
     0;
 
@@ -57,6 +60,9 @@ void protocol_test_doubles_reset(void)
     s_response.packet_id =
         -1;
 
+    s_active_session_id =
+        42U;
+
     s_dispatch_call_count =
         0;
 
@@ -96,6 +102,7 @@ void protocol_test_set_dispatch_result(
 
 esp_err_t singlecan_response_send(
     int packet_id,
+    uint32_t session_id,
     const char *status,
     const char *command,
     const char *reason
@@ -106,6 +113,9 @@ esp_err_t singlecan_response_send(
 
     s_response.packet_id =
         packet_id;
+
+    s_response.session_id =
+        session_id;
 
     copy_optional_text(
         s_response.status,
@@ -163,9 +173,17 @@ esp_err_t singlecan_handshake_response_send(
     return ESP_OK;
 }
 
+void protocol_test_set_active_session(
+    uint32_t session_id
+)
+{
+    s_active_session_id =
+        session_id;
+}
+
 uint32_t bt_spp_session_get_id(void)
 {
-    return 42U;
+    return s_active_session_id;
 }
 
 singlecan_command_dispatch_result_t

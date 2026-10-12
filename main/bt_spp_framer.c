@@ -81,7 +81,7 @@ static void discard_current_frame(
         1;
 }
 
-static void deliver_complete_frame(void)
+static void deliver_complete_frame(uint32_t session_id)
 {
     if (s_rx_length == 0) {
         return;
@@ -99,7 +99,8 @@ static void deliver_complete_frame(void)
 
     if (s_frame_handler != NULL) {
         s_frame_handler(
-            s_rx_buffer
+            s_rx_buffer,
+            session_id
         );
     }
 
@@ -163,7 +164,8 @@ void bt_spp_framer_reset(void)
 
 void bt_spp_framer_process(
     const uint8_t *data,
-    size_t data_length
+    size_t data_length,
+    uint32_t session_id
 )
 {
     if (
@@ -221,7 +223,7 @@ void bt_spp_framer_process(
                 0;
 
             if (byte == '\n') {
-                deliver_complete_frame();
+                deliver_complete_frame(session_id);
 
                 continue;
             }
@@ -249,7 +251,7 @@ void bt_spp_framer_process(
         }
 
         if (byte == '\n') {
-            deliver_complete_frame();
+            deliver_complete_frame(session_id);
 
             continue;
         }

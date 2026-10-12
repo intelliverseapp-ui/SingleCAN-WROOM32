@@ -7,10 +7,15 @@
 
 static char s_sent_message[512];
 
-esp_err_t bt_spp_send(
-    const char *message
+esp_err_t bt_spp_send_for_session(
+    const char *message,
+    uint32_t session_id
 )
 {
+    if (session_id == 0U) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (message == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -40,6 +45,7 @@ static void test_response_contains_protocol_version(void)
         ESP_OK,
         singlecan_response_send(
             1,
+            42U,
             "ok",
             "config.module",
             NULL
@@ -77,6 +83,72 @@ static void test_response_contains_protocol_version(void)
     );
 }
 
+
+static void test_response_contains_originating_session_id(void)
+{
+    memset(
+        s_sent_message,
+        0,
+        sizeof(s_sent_message)
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        singlecan_response_send(
+            7,
+            42U,
+            "ok",
+            "config.module",
+            NULL
+        )
+    );
+
+    cJSON *response =
+        cJSON_Parse(
+            s_sent_message
+        );
+
+    TEST_ASSERT_NOT_NULL(
+        response
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        42U,
+        (uint32_t)cJSON_GetObjectItemCaseSensitive(
+            response,
+            "session_id"
+        )->valuedouble
+    );
+
+    cJSON_Delete(
+        response
+    );
+}
+
+static void test_response_rejects_zero_session_id(void)
+{
+    memset(
+        s_sent_message,
+        0,
+        sizeof(s_sent_message)
+    );
+
+    TEST_ASSERT_EQUAL(
+        ESP_ERR_INVALID_ARG,
+        singlecan_response_send(
+            7,
+            0U,
+            "ok",
+            "config.module",
+            NULL
+        )
+    );
+
+    TEST_ASSERT_EQUAL_CHAR(
+        '\0',
+        s_sent_message[0]
+    );
+}
 
 static void test_handshake_response_contains_session_and_capabilities(void)
 {
@@ -163,6 +235,14 @@ void app_main(void)
 
     RUN_TEST(
         test_response_contains_protocol_version
+    );
+
+    RUN_TEST(
+        test_response_contains_originating_session_id
+    );
+
+    RUN_TEST(
+        test_response_rejects_zero_session_id
     );
 
     RUN_TEST(

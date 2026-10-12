@@ -126,6 +126,17 @@ esp_err_t bt_spp_send(
     const char *message
 );
 
+/**
+ * Queues a message only for the explicitly supplied SPP session.
+ *
+ * Returns ESP_ERR_INVALID_STATE when session_id is zero or is not the
+ * active session; the message is never rebound to a newer session.
+ */
+esp_err_t bt_spp_send_for_session(
+    const char *message,
+    uint32_t session_id
+);
+
 #ifdef __cplusplus
 }
 #endif

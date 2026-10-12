@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define TEST_SESSION_ID 42U
 #define TEST_MAX_FRAME_LENGTH 4096
 #define CAPTURED_FRAME_CAPACITY 4
 
@@ -20,9 +21,15 @@ static size_t s_captured_count =
     0;
 
 static void capture_frame(
-    const char *frame
+    const char *frame,
+    uint32_t session_id
 )
 {
+    TEST_ASSERT_EQUAL_UINT32(
+        TEST_SESSION_ID,
+        session_id
+    );
+
     if (
         frame == NULL ||
         s_captured_count >=
@@ -69,7 +76,8 @@ static void process_text(
 {
     bt_spp_framer_process(
         (const uint8_t *)text,
-        strlen(text)
+        strlen(text),
+        TEST_SESSION_ID
     );
 }
 
@@ -223,7 +231,8 @@ static void test_control_byte_is_discarded(void)
 
     bt_spp_framer_process(
         input,
-        sizeof(input)
+        sizeof(input),
+        TEST_SESSION_ID
     );
 
     TEST_ASSERT_EQUAL_UINT32(
@@ -243,12 +252,14 @@ static void test_null_and_empty_fragments_are_ignored(void)
 
     bt_spp_framer_process(
         NULL,
-        5
+        5,
+        TEST_SESSION_ID
     );
 
     bt_spp_framer_process(
         (const uint8_t *)"ignored",
-        0
+        0,
+        TEST_SESSION_ID
     );
 
     TEST_ASSERT_EQUAL_UINT32(
@@ -311,7 +322,8 @@ static void test_maximum_length_frame_is_accepted(void)
 
     bt_spp_framer_process(
         (const uint8_t *)input,
-        TEST_MAX_FRAME_LENGTH + 1
+        TEST_MAX_FRAME_LENGTH + 1,
+        TEST_SESSION_ID
     );
 
     TEST_ASSERT_EQUAL_UINT32(
@@ -368,7 +380,8 @@ static void test_oversized_frame_is_discarded_and_recovers(void)
 
     bt_spp_framer_process(
         (const uint8_t *)input,
-        TEST_MAX_FRAME_LENGTH + 5
+        TEST_MAX_FRAME_LENGTH + 5,
+        TEST_SESSION_ID
     );
 
     TEST_ASSERT_EQUAL_UINT32(

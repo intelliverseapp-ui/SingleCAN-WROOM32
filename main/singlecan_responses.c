@@ -13,6 +13,7 @@ static const char *TAG =
 
 esp_err_t singlecan_response_send(
     int packet_id,
+    uint32_t session_id,
     const char *status,
     const char *command,
     const char *reason
@@ -20,6 +21,7 @@ esp_err_t singlecan_response_send(
 {
     if (
         packet_id < 0 ||
+        session_id == 0U ||
         status == NULL ||
         status[0] == '\0' ||
         command == NULL ||
@@ -53,6 +55,18 @@ esp_err_t singlecan_response_send(
             response,
             "id",
             packet_id
+        ) == NULL
+    ) {
+        valid =
+            0;
+    }
+
+    if (
+        valid &&
+        cJSON_AddNumberToObject(
+            response,
+            "session_id",
+            (double)session_id
         ) == NULL
     ) {
         valid =
@@ -160,8 +174,9 @@ esp_err_t singlecan_response_send(
     );
 
     const esp_err_t send_result =
-        bt_spp_send(
-            response_text
+        bt_spp_send_for_session(
+            response_text,
+            session_id
         );
 
     if (
@@ -316,8 +331,9 @@ esp_err_t singlecan_handshake_response_send(
     );
 
     const esp_err_t send_result =
-        bt_spp_send(
-            response_text
+        bt_spp_send_for_session(
+            response_text,
+            session_id
         );
 
     cJSON_free(
