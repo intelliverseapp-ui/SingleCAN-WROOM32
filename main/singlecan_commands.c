@@ -4,6 +4,7 @@
 #include "singlecan_responses.h"
 
 #include "bt_spp.h"
+#include "bt_spp_session_identity.h"
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -899,12 +900,27 @@ static void process_json_packet(
             COMMAND_PROTOCOL_VERSION
         );
 
-        singlecan_response_send(
-            packet_id,
-            "ok",
-            command,
-            NULL
-        );
+        const uint32_t session_id =
+            bt_spp_session_get_id();
+
+        if (session_id == 0U) {
+            ESP_LOGE(
+                TAG,
+                "Protocol handshake rejected without active session"
+            );
+
+            singlecan_response_send(
+                packet_id,
+                "error",
+                command,
+                "session_unavailable"
+            );
+        } else {
+            singlecan_handshake_response_send(
+                packet_id,
+                session_id
+            );
+        }
 
         cJSON_Delete(
             root

@@ -2,6 +2,8 @@
 
 #include "singlecan_command_dispatch.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -9,6 +11,7 @@ extern "C" {
 typedef struct {
     int call_count;
     int packet_id;
+    uint32_t session_id;
     char status[32];
     char command[80];
     char reason[80];

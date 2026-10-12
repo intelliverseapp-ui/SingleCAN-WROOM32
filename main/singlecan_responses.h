@@ -2,6 +2,8 @@
 
 #include "esp_err.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,6 +30,21 @@ esp_err_t singlecan_response_send(
     const char *status,
     const char *command,
     const char *reason
+);
+
+/**
+ * Sends the protocol handshake response for the active SPP session.
+ *
+ * The response truthfully reports:
+ * - protocol version 1
+ * - the active nonzero SPP session generation
+ * - Single-CAN module support
+ * - CAN transmission disabled
+ * - vehicle commands available as non-transmitting stubs only
+ */
+esp_err_t singlecan_handshake_response_send(
+    int packet_id,
+    uint32_t session_id
 );
 
 #ifdef __cplusplus

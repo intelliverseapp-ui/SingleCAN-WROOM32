@@ -187,3 +187,147 @@ esp_err_t singlecan_response_send(
 
     return send_result;
 }
+
+esp_err_t singlecan_handshake_response_send(
+    int packet_id,
+    uint32_t session_id
+)
+{
+    if (
+        packet_id < 0 ||
+        session_id == 0U
+    ) {
+        ESP_LOGE(
+            TAG,
+            "Cannot create handshake response with invalid fields"
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    cJSON *response =
+        cJSON_CreateObject();
+
+    if (response == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    int valid =
+        1;
+
+    valid =
+        valid &&
+        cJSON_AddNumberToObject(
+            response,
+            "id",
+            packet_id
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddNumberToObject(
+            response,
+            "version",
+            1
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddStringToObject(
+            response,
+            "type",
+            "response"
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddStringToObject(
+            response,
+            "status",
+            "ok"
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddStringToObject(
+            response,
+            "command",
+            "protocol.handshake"
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddNumberToObject(
+            response,
+            "session_id",
+            session_id
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddStringToObject(
+            response,
+            "module",
+            "single"
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddBoolToObject(
+            response,
+            "can_transmit",
+            0
+        ) != NULL;
+
+    valid =
+        valid &&
+        cJSON_AddStringToObject(
+            response,
+            "vehicle_commands",
+            "stub_only"
+        ) != NULL;
+
+    if (!valid) {
+        cJSON_Delete(
+            response
+        );
+
+        return ESP_ERR_NO_MEM;
+    }
+
+    char *response_text =
+        cJSON_PrintUnformatted(
+            response
+        );
+
+    if (response_text == NULL) {
+        cJSON_Delete(
+            response
+        );
+
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Sending handshake response: id=%d session=%lu",
+        packet_id,
+        (unsigned long)session_id
+    );
+
+    const esp_err_t send_result =
+        bt_spp_send(
+            response_text
+        );
+
+    cJSON_free(
+        response_text
+    );
+
+    cJSON_Delete(
+        response
+    );
+
+    return send_result;
+}
+

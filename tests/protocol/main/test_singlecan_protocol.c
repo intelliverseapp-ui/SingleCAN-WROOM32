@@ -43,6 +43,11 @@ static void test_protocol_handshake_succeeds_before_configuration(void)
         response->reason
     );
 
+    TEST_ASSERT_EQUAL_UINT32(
+        42U,
+        response->session_id
+    );
+
     TEST_ASSERT_EQUAL_INT(
         0,
         singlecan_commands_is_configured()

@@ -128,6 +128,46 @@ esp_err_t singlecan_response_send(
     return ESP_OK;
 }
 
+esp_err_t singlecan_handshake_response_send(
+    int packet_id,
+    uint32_t session_id
+)
+{
+    s_response.call_count +=
+        1;
+
+    s_response.packet_id =
+        packet_id;
+
+    s_response.session_id =
+        session_id;
+
+    copy_optional_text(
+        s_response.status,
+        sizeof(s_response.status),
+        "ok"
+    );
+
+    copy_optional_text(
+        s_response.command,
+        sizeof(s_response.command),
+        "protocol.handshake"
+    );
+
+    copy_optional_text(
+        s_response.reason,
+        sizeof(s_response.reason),
+        NULL
+    );
+
+    return ESP_OK;
+}
+
+uint32_t bt_spp_session_get_id(void)
+{
+    return 42U;
+}
+
 singlecan_command_dispatch_result_t
 singlecan_command_dispatch(
     const char *command
