@@ -30,6 +30,7 @@ static const char *TAG =
 
 #define COMMAND_PROTOCOL_VERSION 1
 #define COMMAND_TYPE "command"
+#define PROTOCOL_HANDSHAKE_COMMAND "protocol.handshake"
 #define MODULE_CONFIG_COMMAND "config.module"
 
 #define MAXIMUM_COMMAND_LENGTH 64
@@ -795,6 +796,12 @@ static void process_json_packet(
             value_item->valuestring;
     }
 
+    const bool is_protocol_handshake =
+        strcasecmp(
+            command,
+            PROTOCOL_HANDSHAKE_COMMAND
+        ) == 0;
+
     const bool is_module_config =
         strcasecmp(
             command,
@@ -884,6 +891,27 @@ static void process_json_packet(
         "Validated fresh command envelope: id=%d",
         packet_id
     );
+
+    if (is_protocol_handshake) {
+        ESP_LOGI(
+            TAG,
+            "Protocol handshake accepted: version=%d",
+            COMMAND_PROTOCOL_VERSION
+        );
+
+        singlecan_response_send(
+            packet_id,
+            "ok",
+            command,
+            NULL
+        );
+
+        cJSON_Delete(
+            root
+        );
+
+        return;
+    }
 
     if (is_module_config) {
         if (

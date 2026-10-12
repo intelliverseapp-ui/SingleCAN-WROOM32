@@ -5,6 +5,55 @@
 
 #include <stdio.h>
 
+static void test_protocol_handshake_succeeds_before_configuration(void)
+{
+    protocol_test_doubles_reset();
+    singlecan_commands_reset_session();
+
+    singlecan_commands_process(
+        "{\"id\":1,\"version\":1,\"type\":\"command\","
+        "\"command\":\"protocol.handshake\"}"
+    );
+
+    const protocol_test_response_capture_t *response =
+        protocol_test_response_capture();
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        response->call_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        1,
+        response->packet_id
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "ok",
+        response->status
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "protocol.handshake",
+        response->command
+    );
+
+    TEST_ASSERT_EQUAL_STRING(
+        "",
+        response->reason
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        singlecan_commands_is_configured()
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        protocol_test_dispatch_call_count()
+    );
+}
+
 static void test_valid_single_module_configuration(void)
 {
     protocol_test_doubles_reset();
@@ -732,6 +781,10 @@ static void test_per_session_rate_limit_drops_excess_packet(void)
 void app_main(void)
 {
     UNITY_BEGIN();
+
+    RUN_TEST(
+        test_protocol_handshake_succeeds_before_configuration
+    );
 
     RUN_TEST(
         test_valid_single_module_configuration
