@@ -61,6 +61,18 @@ esp_err_t singlecan_response_send(
 
     if (
         valid &&
+        cJSON_AddNumberToObject(
+            response,
+            "version",
+            1
+        ) == NULL
+    ) {
+        valid =
+            0;
+    }
+
+    if (
+        valid &&
         cJSON_AddStringToObject(
             response,
             "type",

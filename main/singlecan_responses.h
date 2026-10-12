@@ -11,6 +11,7 @@ extern "C" {
  *
  * The response contains:
  * - id
+ * - version=1
  * - type=response
  * - status
  * - command
