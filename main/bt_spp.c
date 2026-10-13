@@ -801,16 +801,16 @@ static void spp_event_handler(
             param->srv_open.status ==
                 ESP_SPP_SUCCESS;
 
-        const int peer_is_trusted =
+        const int peer_is_bonded =
             connection_is_valid &&
-            bt_peer_authorization_is_explicitly_trusted(
+            bt_peer_authorization_is_trusted(
                 param->srv_open.rem_bda
             );
 
         int connection_accepted =
             0;
 
-        if (peer_is_trusted) {
+        if (peer_is_bonded) {
             connection_accepted =
                 bt_spp_accept_session_transition(
                     new_handle,
@@ -821,7 +821,7 @@ static void spp_event_handler(
         if (!connection_accepted) {
             ESP_LOGW(
                 TAG,
-                "Rejecting untrusted, additional, or invalid "
+                "Rejecting unbonded, additional, or invalid "
                 "SPP client, handle=%" PRIu32,
                 new_handle
             );

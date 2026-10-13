@@ -513,6 +513,64 @@ static void test_exact_bonded_peer_is_trusted(void)
     );
 }
 
+static void test_any_bonded_peer_is_trusted_without_nvs_binding(void)
+{
+    reset_bond_database();
+
+    s_bonded_device_count =
+        2;
+
+    const esp_bd_addr_t first_phone = {
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06
+    };
+
+    const esp_bd_addr_t second_phone = {
+        0x10,
+        0x20,
+        0x30,
+        0x40,
+        0x50,
+        0x60
+    };
+
+    copy_address(
+        s_bonded_devices[0],
+        first_phone
+    );
+
+    copy_address(
+        s_bonded_devices[1],
+        second_phone
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_peer_authorization_is_trusted(
+            first_phone
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_peer_authorization_is_trusted(
+            second_phone
+        )
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_open_count
+    );
+
+    TEST_ASSERT_EQUAL_INT(
+        0,
+        s_nvs_get_blob_count
+    );
+}
+
 static void test_unlisted_peer_is_rejected(void)
 {
     reset_bond_database();
@@ -1450,6 +1508,10 @@ void app_main(void)
 
     RUN_TEST(
         test_exact_bonded_peer_is_trusted
+    );
+
+    RUN_TEST(
+        test_any_bonded_peer_is_trusted_without_nvs_binding
     );
 
     RUN_TEST(

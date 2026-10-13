@@ -817,6 +817,126 @@ static void test_same_handle_replacement_waits_for_guarded_disconnect(void)
     );
 }
 
+static void test_second_client_rejected_then_replacement_after_close(void)
+{
+    reset_observation();
+
+    TEST_ASSERT_EQUAL(
+        ESP_OK,
+        bt_spp_session_lifecycle_init()
+    );
+
+    uint32_t first_session_id =
+        0;
+
+    uint32_t rejected_session_id =
+        0;
+
+    uint32_t second_session_id =
+        0;
+
+    TEST_ASSERT_TRUE(
+        bt_spp_accept_session_transition(
+            400,
+            &first_session_id
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_accept_session_transition(
+            500,
+            &rejected_session_id
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_matches(
+            400,
+            first_session_id
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_handle_is_active(
+            500
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_close_session_transition(
+            500
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_set_congested(
+            500,
+            1
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_matches(
+            400,
+            first_session_id
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_close_session_transition(
+            400
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_is_connected()
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_accept_session_transition(
+            500,
+            &second_session_id
+        )
+    );
+
+    TEST_ASSERT_NOT_EQUAL(
+        first_session_id,
+        second_session_id
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_matches(
+            400,
+            first_session_id
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_session_set_congested(
+            400,
+            1
+        )
+    );
+
+    TEST_ASSERT_FALSE(
+        bt_spp_close_session_transition(
+            400
+        )
+    );
+
+    TEST_ASSERT_TRUE(
+        bt_spp_session_matches(
+            500,
+            second_session_id
+        )
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(
+        500,
+        bt_spp_session_get_handle()
+    );
+}
+
 void app_main(void)
 {
     s_test_events =
@@ -838,6 +958,10 @@ void app_main(void)
 
     RUN_TEST(
         test_same_handle_replacement_waits_for_guarded_disconnect
+    );
+
+    RUN_TEST(
+        test_second_client_rejected_then_replacement_after_close
     );
 
     UNITY_END();
