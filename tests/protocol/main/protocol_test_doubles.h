@@ -2,6 +2,8 @@
 
 #include "singlecan_command_dispatch.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -9,6 +11,7 @@ extern "C" {
 typedef struct {
     int call_count;
     int packet_id;
+    uint32_t session_id;
     char status[32];
     char command[80];
     char reason[80];
@@ -18,6 +21,10 @@ void protocol_test_doubles_reset(void);
 
 const protocol_test_response_capture_t *
 protocol_test_response_capture(void);
+
+void protocol_test_set_active_session(
+    uint32_t session_id
+);
 
 int protocol_test_dispatch_call_count(void);
 

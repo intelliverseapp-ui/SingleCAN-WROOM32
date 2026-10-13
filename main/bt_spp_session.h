@@ -1,5 +1,7 @@
 #pragma once
 
+#include "bt_spp_session_identity.h"
+
 #include "bt_spp_writer.h"
 
 #include <stdint.h>
@@ -101,11 +103,6 @@ int bt_spp_session_is_connected(void);
  * Returns zero when no client owns the session.
  */
 uint32_t bt_spp_session_get_handle(void);
-
-/**
- * Returns the current session generation.
- */
-uint32_t bt_spp_session_get_id(void);
 
 #ifdef __cplusplus
 }

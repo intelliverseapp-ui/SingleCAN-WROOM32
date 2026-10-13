@@ -247,10 +247,12 @@ void singlecan_commands_reset_session(void)
 }
 
 void singlecan_commands_process(
-    const char *frame
+    const char *frame,
+    uint32_t session_id
 )
 {
     (void)frame;
+    (void)session_id;
 }
 
 void bt_spp_framer_reset(void)
@@ -276,11 +278,13 @@ int bt_spp_framer_init(
 
 void bt_spp_framer_process(
     const uint8_t *data,
-    size_t data_length
+    size_t data_length,
+    uint32_t session_id
 )
 {
     (void)data;
     (void)data_length;
+    (void)session_id;
 }
 
 void bt_spp_writer_on_connected(void)

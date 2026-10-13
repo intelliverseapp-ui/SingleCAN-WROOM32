@@ -52,7 +52,8 @@ static volatile esp_err_t s_spp_startup_error =
 // ------------------------------------------------------------
 
 static void bt_spp_handle_complete_frame(
-    const char *frame
+    const char *frame,
+    uint32_t session_id
 )
 {
     if (frame == NULL) {
@@ -65,7 +66,8 @@ static void bt_spp_handle_complete_frame(
     }
 
     singlecan_commands_process(
-        frame
+        frame,
+        session_id
     );
 }
 
@@ -620,6 +622,37 @@ esp_err_t bt_spp_send(
     );
 }
 
+esp_err_t bt_spp_send_for_session(
+    const char *message,
+    uint32_t session_id
+)
+{
+    const uint32_t handle =
+        bt_spp_session_get_handle();
+
+    if (
+        session_id == 0U ||
+        handle == 0 ||
+        !bt_spp_is_server_ready() ||
+        !bt_spp_session_matches(
+            handle,
+            session_id
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Cannot queue SPP message: originating session is not active"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return bt_spp_writer_send(
+        message,
+        session_id
+    );
+}
+
 // ------------------------------------------------------------
 // SPP EVENT HANDLER
 // ------------------------------------------------------------
@@ -879,9 +912,29 @@ static void spp_event_handler(
             param->data_ind.len
         );
 
+        bt_spp_writer_session_t origin_session;
+
+        bt_spp_session_get_writer_snapshot(
+            &origin_session
+        );
+
+        if (
+            origin_session.handle !=
+                param->data_ind.handle ||
+            origin_session.session_id == 0U
+        ) {
+            ESP_LOGW(
+                TAG,
+                "Ignoring SPP data without a matching session snapshot"
+            );
+
+            break;
+        }
+
         bt_spp_framer_process(
             param->data_ind.data,
-            (size_t)param->data_ind.len
+            (size_t)param->data_ind.len,
+            origin_session.session_id
         );
 
         break;
